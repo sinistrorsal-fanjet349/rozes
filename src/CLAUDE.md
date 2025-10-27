@@ -6,13 +6,416 @@
 
 ## Table of Contents
 
-1. [Source Organization](#source-organization)
-2. [Zig Implementation Patterns](#zig-implementation-patterns)
-3. [Tiger Style Enforcement](#tiger-style-enforcement)
-4. [Common Code Patterns](#common-code-patterns)
-5. [Error Handling](#error-handling)
-6. [Memory Management](#memory-management)
-7. [Testing Patterns](#testing-patterns)
+1. [Critical WebAssembly Pitfalls](#critical-webassembly-pitfalls) ⚠️ **READ THIS FIRST**
+2. [Source Organization](#source-organization)
+3. [Zig Implementation Patterns](#zig-implementation-patterns)
+4. [Tiger Style Enforcement](#tiger-style-enforcement)
+5. [Common Code Patterns](#common-code-patterns)
+6. [Error Handling](#error-handling)
+7. [Memory Management](#memory-management)
+8. [Testing Patterns](#testing-patterns)
+
+---
+
+## Critical WebAssembly Pitfalls
+
+> **⚠️ CRITICAL**: These mistakes were made in the initial Wasm implementation (2025-10-27). Read this section BEFORE writing any Wasm-related code.
+
+### Pitfall #1: Stack Allocations in WebAssembly 🔥
+
+**THE MISTAKE**:
+```zig
+// ❌ FATAL ERROR - Will crash in browser!
+var memory_buffer: [100 * 1024 * 1024]u8 = undefined; // 100MB on stack
+var fba = std.heap.FixedBufferAllocator.init(&memory_buffer);
+```
+
+**WHY IT FAILS**:
+- WebAssembly stack limit: **1-2MB** (varies by browser)
+- This allocates 100MB on the stack → **instant stack overflow**
+- Code compiles fine, but crashes on first function call in browser
+
+**THE FIX**:
+```zig
+// ✅ CORRECT - Use Wasm linear memory with @wasmMemoryGrow
+var heap_start: usize = undefined;
+var heap_size: usize = 0;
+const INITIAL_HEAP_PAGES: u32 = 1600; // 1600 pages × 64KB = 100MB
+
+fn initHeap() !void {
+    const current_pages = @wasmMemorySize(0);
+    const needed_pages = INITIAL_HEAP_PAGES;
+
+    if (current_pages < needed_pages) {
+        const grown = @wasmMemoryGrow(0, needed_pages - current_pages);
+        std.debug.assert(grown != @maxValue(u32)); // Growth succeeded
+    }
+
+    heap_start = current_pages * 64 * 1024; // 64KB per page
+    heap_size = needed_pages * 64 * 1024;
+
+    std.debug.assert(heap_start > 0);
+    std.debug.assert(heap_size >= 100 * 1024 * 1024);
+}
+```
+
+**RULE**: Never allocate >1KB on stack in WebAssembly. Use `@wasmMemoryGrow()` for heap.
+
+---
+
+### Pitfall #2: Using `usize` in Wasm Exports 🔥
+
+**THE MISTAKE**:
+```zig
+// ❌ WRONG - usize is architecture-dependent
+export fn rozes_getColumnF64(
+    handle: i32,
+    col_name_ptr: [*]const u8,
+    col_name_len: u32,
+    out_ptr: *usize,  // ❌ wasm32 vs wasm64 difference!
+    out_len: *u32,
+) i32 {
+    out_ptr.* = @intFromPtr(data.ptr); // ❌ Changes size
+}
+```
+
+**WHY IT FAILS**:
+- Tiger Style requires **explicit types** (not `usize`)
+- `usize` = 32-bit in wasm32, 64-bit in wasm64
+- JavaScript expects consistent pointer size
+- Memory layout breaks between architectures
+
+**THE FIX**:
+```zig
+// ✅ CORRECT - Explicit u32 for wasm32
+export fn rozes_getColumnF64(
+    handle: i32,
+    col_name_ptr: [*]const u8,
+    col_name_len: u32,
+    out_ptr: *u32,  // ✅ Explicit 32-bit
+    out_len: *u32,
+) i32 {
+    const ptr_val: u32 = @intCast(@intFromPtr(data.ptr));
+    out_ptr.* = ptr_val;
+
+    std.debug.assert(ptr_val != 0); // Non-null
+    std.debug.assert(out_len.* == @intCast(data.len)); // Verify
+}
+```
+
+**RULE**: Always use `u32` (not `usize`) for Wasm32 pointers and sizes.
+
+---
+
+### Pitfall #3: Insufficient Assertions in Wasm Functions 🔥
+
+**THE MISTAKE**:
+```zig
+// ❌ WRONG - Only 1 assertion (Tiger Style requires 2+)
+fn register(self: *DataFrameRegistry, df: *DataFrame) !i32 {
+    std.debug.assert(self.next_id < MAX_DATAFRAMES * 2); // Only 1!
+
+    var i: u32 = 0;
+    while (i < MAX_DATAFRAMES) : (i += 1) {
+        if (self.frames[i] == null) {
+            self.frames[i] = df;
+            self.next_id = i + 1;
+            return @intCast(i);
+        }
+    }
+    return error.TooManyDataFrames;
+}
+```
+
+**WHY IT FAILS**:
+- Tiger Style: **2+ assertions per function** (hard rule)
+- Missing: null pointer check, post-loop assertion
+- Wasm debugging is harder → need more assertions
+
+**THE FIX**:
+```zig
+// ✅ CORRECT - 3 assertions
+fn register(self: *DataFrameRegistry, df: *DataFrame) !i32 {
+    std.debug.assert(self.next_id < MAX_DATAFRAMES * 2); // Pre-condition #1
+    std.debug.assert(df != @as(*DataFrame, @ptrFromInt(0))); // Pre-condition #2: Non-null
+
+    var i: u32 = 0;
+    while (i < MAX_DATAFRAMES) : (i += 1) {
+        if (self.frames[i] == null) {
+            self.frames[i] = df;
+            self.next_id = i + 1;
+            return @intCast(i);
+        }
+    }
+
+    std.debug.assert(i == MAX_DATAFRAMES); // Post-condition #3: Loop exhausted
+    return error.TooManyDataFrames;
+}
+```
+
+**RULE**: Every function needs **2+ assertions**. Post-loop assertions are mandatory.
+
+---
+
+### Pitfall #4: Missing Error Context in Data Processing 🔥
+
+**THE MISTAKE**:
+```zig
+// ❌ WRONG - Silent error, no context
+df_ptr.* = parser.toDataFrame() catch |err| {
+    allocator.destroy(df_ptr);
+    return @intFromEnum(ErrorCode.fromError(err));
+    // User sees: "Error -2" ← USELESS!
+};
+```
+
+**WHY IT FAILS**:
+- CSV parsing fails at row 47,823 of 100K rows
+- User sees generic error code: `-2` (InvalidFormat)
+- **No row number, no column, no problematic data**
+- Hours wasted debugging
+
+**THE FIX**:
+```zig
+// ✅ CORRECT - Log error context with row/column
+df_ptr.* = parser.toDataFrame() catch |err| {
+    // Log BEFORE cleanup
+    std.log.err("CSV parsing failed: {} at row {} col {} - field: '{s}'", .{
+        err,
+        parser.current_row_index,
+        parser.current_col_index,
+        parser.current_field.items[0..@min(50, parser.current_field.items.len)],
+    });
+
+    allocator.destroy(df_ptr);
+    return @intFromEnum(ErrorCode.fromError(err));
+};
+```
+
+**REQUIRED**: Add to CSVParser:
+```zig
+pub const CSVParser = struct {
+    // ... existing fields
+    current_row_index: u32,   // ✅ ADD THIS
+    current_col_index: u32,   // ✅ ADD THIS
+    // ...
+};
+```
+
+**RULE**: Always log row/column numbers for data processing errors. Generic error codes are useless.
+
+---
+
+### Pitfall #5: JavaScript Memory Layout Assumptions 🔥
+
+**THE MISTAKE**:
+```javascript
+// ❌ WRONG - Overwrites memory at offset 0!
+const csvPtr = 0; // Hardcoded offset 0
+const csvArray = new Uint8Array(wasm.memory.buffer);
+csvArray.set(csvBytes, csvPtr); // ❌ Destroys Wasm globals/stack!
+```
+
+**WHY IT FAILS**:
+- Wasm memory offset 0 contains globals and stack
+- Writing CSV data there **corrupts memory silently**
+- Hard to debug (intermittent crashes)
+
+**THE FIX**:
+```zig
+// 1. Export allocation functions in wasm.zig
+export fn rozes_alloc(size: u32) u32 {
+    std.debug.assert(size > 0);
+    std.debug.assert(size <= 1_000_000_000); // 1GB max
+
+    const allocator = getAllocator();
+    const mem = allocator.alloc(u8, size) catch return 0;
+
+    const ptr: u32 = @intCast(@intFromPtr(mem.ptr));
+    std.debug.assert(ptr != 0); // Non-null
+    return ptr;
+}
+
+export fn rozes_free_buffer(ptr: u32, size: u32) void {
+    std.debug.assert(ptr != 0);
+    std.debug.assert(size > 0);
+
+    const allocator = getAllocator();
+    const mem = @as([*]u8, @ptrFromInt(ptr))[0..size];
+    allocator.free(mem);
+}
+```
+
+```javascript
+// 2. Use in JavaScript
+const csvBytes = new TextEncoder().encode(csvText);
+const csvPtr = wasm.instance.exports.rozes_alloc(csvBytes.length);
+
+if (csvPtr === 0) {
+    throw new RozesError(ErrorCode.OutOfMemory, 'Failed to allocate CSV buffer');
+}
+
+try {
+    const csvArray = new Uint8Array(wasm.memory.buffer, csvPtr, csvBytes.length);
+    csvArray.set(csvBytes);
+
+    const handle = wasm.instance.exports.rozes_parseCSV(csvPtr, csvBytes.length, 0, 0);
+    checkResult(handle, 'Failed to parse CSV');
+    return new DataFrame(handle, wasm);
+} finally {
+    wasm.instance.exports.rozes_free_buffer(csvPtr, csvBytes.length);
+}
+```
+
+**RULE**: Never write to hardcoded Wasm memory offsets. Always allocate via exported functions.
+
+---
+
+### Pitfall #6: Redundant Bounds Checks After Assertions 🔴
+
+**THE MISTAKE**:
+```zig
+// ❌ WRONG - Redundant check after assertion
+fn get(self: *DataFrameRegistry, handle: i32) ?*DataFrame {
+    std.debug.assert(handle >= 0); // Assertion
+
+    if (handle < 0 or handle >= MAX_DATAFRAMES) return null; // ❌ Redundant!
+    const idx: u32 = @intCast(handle);
+    return self.frames[idx];
+}
+```
+
+**WHY IT FAILS**:
+- Wastes CPU cycles checking twice
+- Assertion already catches invalid handles in debug
+- Release builds skip assertions, so check is needed BUT should be first
+
+**THE FIX**:
+```zig
+// ✅ CORRECT - Assertions only (debug) or check only (release)
+fn get(self: *DataFrameRegistry, handle: i32) ?*DataFrame {
+    std.debug.assert(handle >= 0); // Pre-condition
+    std.debug.assert(handle < MAX_DATAFRAMES); // Bounds check
+
+    const idx: u32 = @intCast(handle); // Panics if out of range
+    const result = self.frames[idx];
+
+    std.debug.assert(result == null or @intFromPtr(result.?) != 0); // Post-condition
+    return result;
+}
+```
+
+**RULE**: Don't duplicate assertions with runtime checks. Use assertions in debug, rely on them in release.
+
+---
+
+### Pitfall #7: Missing Post-Loop Assertions 🔴
+
+**THE MISTAKE**:
+```zig
+// ❌ WRONG - Loop finishes but no assertion
+var i: u32 = 0;
+while (i < MAX_DATAFRAMES) : (i += 1) {
+    if (self.frames[i] == null) {
+        self.frames[i] = df;
+        return @intCast(i);
+    }
+}
+// ❌ Missing: std.debug.assert(i == MAX_DATAFRAMES);
+return error.TooManyDataFrames;
+```
+
+**WHY IT FAILS**:
+- Tiger Style requires post-loop assertions
+- Verifies loop terminated correctly
+- Catches off-by-one errors
+
+**THE FIX**:
+```zig
+// ✅ CORRECT - Post-loop assertion
+var i: u32 = 0;
+while (i < MAX_DATAFRAMES) : (i += 1) {
+    if (self.frames[i] == null) {
+        self.frames[i] = df;
+        return @intCast(i);
+    }
+}
+std.debug.assert(i == MAX_DATAFRAMES); // ✅ Post-condition
+return error.TooManyDataFrames;
+```
+
+**RULE**: Every bounded loop needs a post-loop assertion verifying termination condition.
+
+---
+
+### WebAssembly Checklist for Code Review
+
+Before committing any Wasm code, verify:
+
+- [ ] **No stack allocations >1KB** (use `@wasmMemoryGrow()`)
+- [ ] **All pointer types are `u32`** (not `usize`)
+- [ ] **Every function has 2+ assertions**
+- [ ] **Post-loop assertions on all bounded loops**
+- [ ] **Error logging includes row/column context**
+- [ ] **JavaScript allocates via exported functions** (not hardcoded offsets)
+- [ ] **No redundant bounds checks after assertions**
+- [ ] **Memory alignment validated** (8-byte for Float64/Int64)
+- [ ] **Check Wasm size after changes** (smaller is better)
+
+**If ANY checkbox is unchecked → DO NOT COMMIT.**
+
+---
+
+### Pitfall #8: WebAssembly Binary Size Bloat 🟡
+
+**THE OBSERVATION** (2025-10-27):
+```bash
+# Before Tiger Style fixes
+zig-out/bin/rozes.wasm: 47KB (but crashed in browser)
+
+# After Tiger Style fixes
+zig-out/bin/rozes.wasm: 52KB (+5KB, but works correctly)
+```
+
+**WHY SIZE INCREASED**:
+Adding safety features increases code size:
+1. **Error logging code**: `std.log.err()` with string formatting (+2KB)
+2. **New exports**: `rozes_alloc()` and `rozes_free_buffer()` (+1KB)
+3. **Row/column tracking**: Additional fields and logic (+1KB)
+4. **Assertions**: 30+ new assertions add debug info (+1KB)
+
+**IMPORTANT TRADEOFF**:
+- ✅ **47KB binary** = crashes instantly (unusable)
+- ✅ **52KB binary** = works correctly with meaningful errors (usable)
+
+**Better is WORKING, not smaller!**
+
+**LESSON**: Binary size is a secondary concern compared to correctness:
+```
+Correctness > Safety > Size > Speed
+```
+
+**When to Optimize Size**:
+- ✅ After Tiger Style compliance is achieved
+- ✅ After all tests pass
+- ✅ Use `strip` and `wasm-opt` tools
+- ✅ Profile which functions are largest
+- ❌ NOT by removing assertions
+- ❌ NOT by removing error logging
+- ❌ NOT by sacrificing safety
+
+**Size Optimization Strategies** (for 0.2.0+):
+1. Use `wasm-opt -Oz` from Binaryen (can save 20-30%)
+2. Use `wasm-strip` to remove debug info (release builds only)
+3. Lazy-load rarely-used functions
+4. Use comptime to reduce runtime code
+5. Pool string constants
+
+**Acceptable Size Range**:
+- **MVP (0.1.0)**: 50-100KB is fine
+- **Production (0.2.0+)**: Target <80KB after optimization
+
+**DO NOT** sacrifice correctness for a few KB!
 
 ---
 

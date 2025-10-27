@@ -51,6 +51,9 @@ pub const CSVParser = struct {
     current_field: std.ArrayListUnmanaged(u8),
     current_row: std.ArrayListUnmanaged([]const u8),
     rows: std.ArrayListUnmanaged([][]const u8),
+    // Error context tracking
+    current_row_index: u32,
+    current_col_index: u32,
 
     /// Initialize CSV parser
     pub fn init(
@@ -86,6 +89,8 @@ pub const CSVParser = struct {
             .current_field = .{},
             .current_row = .{},
             .rows = .{},
+            .current_row_index = 0,
+            .current_col_index = 0,
         };
     }
 
@@ -238,6 +243,9 @@ pub const CSVParser = struct {
 
         const field = try self.current_field.toOwnedSlice(allocator);
 
+        // Update column tracking
+        self.current_col_index += 1;
+
         std.debug.assert(field.len <= MAX_FIELD_LENGTH); // Post-condition
         return field;
     }
@@ -248,6 +256,7 @@ pub const CSVParser = struct {
         std.debug.assert(self.current_row.items.len == 0); // Should be empty
 
         self.state = .Start;
+        self.current_col_index = 0; // Reset column counter for new row
 
         while (try self.nextField()) |field| {
             try self.current_row.append(allocator, field);
@@ -260,6 +269,7 @@ pub const CSVParser = struct {
         // If we got fields, return the row
         if (self.current_row.items.len > 0) {
             const row = try self.current_row.toOwnedSlice(allocator);
+            self.current_row_index += 1; // Increment row counter
             return row;
         }
 
