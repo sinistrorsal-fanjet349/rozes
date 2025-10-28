@@ -121,7 +121,7 @@ pub fn generateMixedCSV(
     defer buf.deinit(allocator);
 
     // Header: id (Int64), score (Float64), name (String), active (Bool)
-    try buf.appendSlice(allocator,"id,score,name,active\n");
+    try buf.appendSlice(allocator, "id,score,name,active\n");
 
     const names = [_][]const u8{ "Alice", "Bob", "Charlie", "Diana", "Eve" };
 

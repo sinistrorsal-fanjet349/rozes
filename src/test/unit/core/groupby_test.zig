@@ -680,3 +680,136 @@ test "GroupBy.agg returns error for non-numeric aggregation on String" {
     const result = grouped.agg(allocator, &specs);
     try testing.expectError(error.TypeMismatch, result);
 }
+
+test "GroupBy.agg computes mean with SIMD optimization (large group)" {
+    const allocator = testing.allocator;
+
+    // Create large group to trigger SIMD path (>= 4 values)
+    const cols = [_]ColumnDesc{
+        ColumnDesc.init("group", .Int64, 0),
+        ColumnDesc.init("value", .Float64, 1),
+    };
+
+    const row_count = 100;
+    var df = try DataFrame.create(allocator, &cols, row_count);
+    defer df.deinit();
+
+    const group_col = df.columnMut("group").?;
+    const groups = group_col.asInt64Buffer().?;
+
+    const value_col = df.columnMut("value").?;
+    const values = value_col.asFloat64Buffer().?;
+
+    // Fill with two groups:
+    // Group 0: rows 0-49 with values 0.0, 1.0, 2.0, ..., 49.0 → mean = 24.5
+    // Group 1: rows 50-99 with values 50.0, 51.0, ..., 99.0 → mean = 74.5
+
+    var i: u32 = 0;
+    while (i < row_count) : (i += 1) {
+        groups[i] = if (i < 50) 0 else 1;
+        values[i] = @as(f64, @floatFromInt(i));
+    }
+
+    group_col.length = row_count;
+    value_col.length = row_count;
+    try df.setRowCount(row_count);
+
+    // Group and compute mean (should use SIMD for groups >= 4 values)
+    var grouped = try df.groupBy(allocator, "group");
+    defer grouped.deinit();
+
+    const agg_specs = [_]AggSpec{
+        .{ .column = "value", .func = .Mean },
+    };
+
+    var result = try grouped.agg(allocator, &agg_specs);
+    defer result.deinit();
+
+    // Verify results
+    try testing.expectEqual(@as(u32, 2), result.len());
+    const mean_col = result.column("value_Mean");
+    const means = mean_col.?.asFloat64().?;
+
+    // Expected: Group 0 mean = (0 + 1 + ... + 49) / 50 = 1225 / 50 = 24.5
+    //           Group 1 mean = (50 + 51 + ... + 99) / 50 = 3725 / 50 = 74.5
+
+    const mean0 = means[0];
+    const mean1 = means[1];
+
+    // Check which group is which (order may vary)
+    if (mean0 < 50.0) {
+        try testing.expectApproxEqRel(@as(f64, 24.5), mean0, 0.001);
+        try testing.expectApproxEqRel(@as(f64, 74.5), mean1, 0.001);
+    } else {
+        try testing.expectApproxEqRel(@as(f64, 74.5), mean0, 0.001);
+        try testing.expectApproxEqRel(@as(f64, 24.5), mean1, 0.001);
+    }
+}
+
+test "GroupBy.agg computes mean for Int64 column with SIMD" {
+    const allocator = testing.allocator;
+
+    const cols = [_]ColumnDesc{
+        ColumnDesc.init("category", .Int64, 0),
+        ColumnDesc.init("amount", .Int64, 1),
+    };
+
+    // Create group with exactly 8 values (tests SIMD batch of 4 × 2)
+    const row_count = 16;
+    var df = try DataFrame.create(allocator, &cols, row_count);
+    defer df.deinit();
+
+    const cat_col = df.columnMut("category").?;
+    const categories = cat_col.asInt64Buffer().?;
+
+    const amt_col = df.columnMut("amount").?;
+    const amounts = amt_col.asInt64Buffer().?;
+
+    // Group 1: 8 values [1, 2, 3, 4, 5, 6, 7, 8] → mean = 4.5
+    // Group 2: 8 values [10, 20, 30, 40, 50, 60, 70, 80] → mean = 45.0
+
+    var i: u32 = 0;
+    while (i < 8) : (i += 1) {
+        categories[i] = 1;
+        amounts[i] = @as(i64, @intCast(i + 1));
+    }
+
+    while (i < 16) : (i += 1) {
+        categories[i] = 2;
+        amounts[i] = @as(i64, @intCast((i - 7) * 10));
+    }
+
+    cat_col.length = row_count;
+    amt_col.length = row_count;
+    try df.setRowCount(row_count);
+
+    // Group and compute mean
+    var grouped = try df.groupBy(allocator, "category");
+    defer grouped.deinit();
+
+    const agg_specs = [_]AggSpec{
+        .{ .column = "amount", .func = .Mean },
+    };
+
+    var result = try grouped.agg(allocator, &agg_specs);
+    defer result.deinit();
+
+    // Verify results
+    try testing.expectEqual(@as(u32, 2), result.len());
+    const mean_col = result.column("amount_Mean");
+    const means = mean_col.?.asFloat64().?;
+
+    // Expected: Group 1 mean = (1+2+3+4+5+6+7+8) / 8 = 36 / 8 = 4.5
+    //           Group 2 mean = (10+20+30+40+50+60+70+80) / 8 = 360 / 8 = 45.0
+
+    const mean1 = means[0];
+    const mean2 = means[1];
+
+    if (mean1 < 10.0) {
+        try testing.expectApproxEqRel(@as(f64, 4.5), mean1, 0.001);
+        try testing.expectApproxEqRel(@as(f64, 45.0), mean2, 0.001);
+    } else {
+        try testing.expectApproxEqRel(@as(f64, 45.0), mean1, 0.001);
+        try testing.expectApproxEqRel(@as(f64, 4.5), mean2, 0.001);
+    }
+}

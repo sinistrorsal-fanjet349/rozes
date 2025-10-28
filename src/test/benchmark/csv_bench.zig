@@ -100,6 +100,5 @@ pub fn benchmarkTypeInference(
 
     const end = std.time.nanoTimestamp();
 
-
     return BenchmarkResult.compute(start, end, rows);
 }

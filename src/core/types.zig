@@ -14,7 +14,8 @@ const std = @import("std");
 /// Supported data types in a DataFrame column.
 ///
 /// MVP (0.1.0) supports only numeric types (Int64, Float64).
-/// String and Bool support deferred to 0.2.0.
+/// String and Bool support added in 0.2.0.
+/// Categorical type added in 0.4.0.
 pub const ValueType = enum {
     /// 64-bit signed integer
     Int64,
@@ -27,6 +28,10 @@ pub const ValueType = enum {
 
     /// Boolean (0.2.0+)
     Bool,
+
+    /// Categorical - Dictionary-encoded string column (0.4.0+)
+    /// Provides 4-8× memory reduction for low-cardinality data
+    Categorical,
 
     /// Null/missing value
     Null,
@@ -48,6 +53,12 @@ pub const ValueType = enum {
             },
             .Bool => blk: {
                 const result: ?u8 = 1;
+                std.debug.assert(result.? > 0);
+                break :blk result;
+            },
+            .Categorical => blk: {
+                // Categorical stores u32 indices (4 bytes per value)
+                const result: ?u8 = 4;
                 std.debug.assert(result.? > 0);
                 break :blk result;
             },
@@ -174,6 +185,161 @@ pub const ParseError = struct {
     }
 };
 
+/// Rich error context for better developer experience (Phase 4)
+/// Provides detailed error information including row, column, field value, and hints
+pub const RichError = struct {
+    /// Error code
+    code: ErrorCode,
+
+    /// Human-readable error message
+    message: []const u8,
+
+    /// Row number where error occurred (optional, 1-indexed for user display)
+    row_number: ?u32,
+
+    /// Column name where error occurred (optional)
+    column_name: ?[]const u8,
+
+    /// Problematic field value (optional, truncated to 100 chars)
+    field_value: ?[]const u8,
+
+    /// Helpful hint for fixing the error (optional)
+    hint: ?[]const u8,
+
+    pub fn init(code: ErrorCode, message: []const u8) RichError {
+        std.debug.assert(message.len > 0); // Message required
+        std.debug.assert(@intFromEnum(code) >= 0); // Valid error code
+
+        return RichError{
+            .code = code,
+            .message = message,
+            .row_number = null,
+            .column_name = null,
+            .field_value = null,
+            .hint = null,
+        };
+    }
+
+    /// Builder pattern: Add row number context
+    pub fn withRow(self: RichError, row: u32) RichError {
+        var result = self;
+        result.row_number = row;
+        return result;
+    }
+
+    /// Builder pattern: Add column name context
+    pub fn withColumn(self: RichError, column: []const u8) RichError {
+        std.debug.assert(column.len > 0); // Column name required
+
+        var result = self;
+        result.column_name = column;
+        return result;
+    }
+
+    /// Builder pattern: Add field value context
+    pub fn withFieldValue(self: RichError, value: []const u8) RichError {
+        var result = self;
+        result.field_value = value;
+        return result;
+    }
+
+    /// Builder pattern: Add helpful hint
+    pub fn withHint(self: RichError, hint_text: []const u8) RichError {
+        std.debug.assert(hint_text.len > 0); // Hint required
+
+        var result = self;
+        result.hint = hint_text;
+        return result;
+    }
+
+    /// Format error as detailed message
+    pub fn format(self: *const RichError, allocator: std.mem.Allocator) ![]const u8 {
+        std.debug.assert(self.message.len > 0); // Valid message
+        std.debug.assert(@intFromEnum(self.code) >= 0); // Valid code
+
+        var buffer = std.ArrayList(u8).init(allocator);
+        defer buffer.deinit();
+
+        // Main error message
+        try buffer.writer().print("RozesError: {s}", .{self.message});
+
+        // Add location context
+        if (self.row_number) |row| {
+            try buffer.writer().print(" at row {}", .{row});
+        }
+
+        if (self.column_name) |col_name| {
+            try buffer.writer().print(" in column '{s}'", .{col_name});
+        }
+
+        try buffer.append('\n');
+
+        // Add field value if available
+        if (self.field_value) |value| {
+            const truncated = if (value.len > 100) value[0..100] else value;
+            try buffer.writer().print("  Field value: \"{s}\"", .{truncated});
+            if (value.len > 100) {
+                try buffer.appendSlice("...");
+            }
+            try buffer.append('\n');
+        }
+
+        // Add hint if available
+        if (self.hint) |hint_text| {
+            try buffer.writer().print("  Hint: {s}\n", .{hint_text});
+        }
+
+        return buffer.toOwnedSlice();
+    }
+};
+
+/// Error codes for JavaScript interop
+pub const ErrorCode = enum(i32) {
+    /// Success
+    Success = 0,
+
+    /// Out of memory
+    OutOfMemory = -1,
+
+    /// Invalid CSV format
+    InvalidFormat = -2,
+
+    /// Type mismatch
+    TypeMismatch = -3,
+
+    /// Column not found
+    ColumnNotFound = -4,
+
+    /// Index out of bounds
+    IndexOutOfBounds = -5,
+
+    /// Invalid configuration
+    InvalidOptions = -6,
+
+    /// Too many DataFrames
+    TooManyDataFrames = -7,
+
+    /// Invalid handle
+    InvalidHandle = -8,
+
+    /// CSV too large
+    CSVTooLarge = -9,
+
+    /// Convert from Zig error to error code
+    pub fn fromError(err: anytype) ErrorCode {
+        return switch (err) {
+            error.OutOfMemory => .OutOfMemory,
+            error.InvalidCSV, error.InvalidFormat => .InvalidFormat,
+            error.TypeMismatch => .TypeMismatch,
+            error.ColumnNotFound => .ColumnNotFound,
+            error.IndexOutOfBounds => .IndexOutOfBounds,
+            error.InvalidOptions, error.PreviewRowsTooLarge, error.InvalidMaxSize, error.InvalidPreviewRows => .InvalidOptions,
+            error.CSVTooLarge => .CSVTooLarge,
+            else => .InvalidFormat,
+        };
+    }
+};
+
 /// Types of parse errors
 pub const ParseErrorType = enum {
     /// Unexpected end of input
@@ -235,6 +401,7 @@ test "ValueType.sizeOf returns correct sizes" {
     try testing.expectEqual(@as(?u8, 8), ValueType.Int64.sizeOf());
     try testing.expectEqual(@as(?u8, 8), ValueType.Float64.sizeOf());
     try testing.expectEqual(@as(?u8, 1), ValueType.Bool.sizeOf());
+    try testing.expectEqual(@as(?u8, 4), ValueType.Categorical.sizeOf());
     try testing.expectEqual(@as(?u8, null), ValueType.String.sizeOf());
     try testing.expectEqual(@as(?u8, null), ValueType.Null.sizeOf());
 }
@@ -246,6 +413,7 @@ test "ValueType.isNumeric identifies numeric types" {
     try testing.expect(ValueType.Float64.isNumeric());
     try testing.expect(!ValueType.String.isNumeric());
     try testing.expect(!ValueType.Bool.isNumeric());
+    try testing.expect(!ValueType.Categorical.isNumeric());
     try testing.expect(!ValueType.Null.isNumeric());
 }
 

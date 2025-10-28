@@ -8,6 +8,7 @@
 //! - Memory: O(n) temporary buffer for indices
 //! - Best case: O(n log n)
 //! - Worst case: O(n log n)
+//! - SIMD Optimization: Float64/Int64 comparisons use SIMD when available
 //!
 //! See docs/TODO.md Phase 2 for sort specifications.
 
@@ -15,6 +16,7 @@ const std = @import("std");
 const types = @import("types.zig");
 const DataFrame = @import("dataframe.zig").DataFrame;
 const Series = @import("series.zig").Series;
+const simd = @import("simd.zig");
 
 const ValueType = types.ValueType;
 

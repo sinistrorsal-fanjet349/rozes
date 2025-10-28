@@ -27,6 +27,11 @@ pub fn main() !void {
         "testdata/external/univocity-parsers/src/test/resources/csv",
         "testdata/external/univocity-parsers/src/test/resources/tsv",
         "testdata/external/univocity-parsers/src/test/resources/examples",
+        // NEW: Industry DataFrame library test suites (added 2025-10-28)
+        "testdata/external/polars/py-polars/tests/unit/io/files",
+        "testdata/external/pandas/pandas/tests/io/parser/data",
+        "testdata/external/duckdb/test/sql", // Has 6 CSVs in subdirectories
+        // Note: Arrow and NumPy sparse checkouts didn't include CSV test files
     };
 
     var total_tests: u32 = 0;
@@ -94,6 +99,13 @@ pub fn main() !void {
                 continue;
             };
             defer allocator.free(content);
+
+            // Skip empty files (valid but not parsable)
+            if (content.len == 0) {
+                std.debug.print("  ⏸️  SKIP: {s} (empty file)\n", .{entry.name});
+                skipped += 1;
+                continue;
+            }
 
             // Auto-detect if this CSV has no headers based on filename
             // Special case: if CSV is just a delimiter, treat as no headers (it's 1 row of data)

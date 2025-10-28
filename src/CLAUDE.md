@@ -7,14 +7,115 @@
 ## Table of Contents
 
 1. [Critical WebAssembly Pitfalls](#critical-webassembly-pitfalls) ⚠️ **READ THIS FIRST**
-2. [Tiger Style Learnings from String Column Implementation](#tiger-style-learnings-from-string-column-implementation) 🎯 **NEW**
-3. [Source Organization](#source-organization)
-4. [Zig Implementation Patterns](#zig-implementation-patterns)
-5. [Tiger Style Enforcement](#tiger-style-enforcement)
-6. [Common Code Patterns](#common-code-patterns)
-7. [Error Handling](#error-handling)
-8. [Memory Management](#memory-management)
-9. [Testing Patterns](#testing-patterns)
+2. [Performance Optimization Strategy](#performance-optimization-strategy) 🚀 **NEW**
+3. [Tiger Style Learnings from String Column Implementation](#tiger-style-learnings-from-string-column-implementation) 🎯
+4. [Source Organization](#source-organization)
+5. [Zig Implementation Patterns](#zig-implementation-patterns)
+6. [Tiger Style Enforcement](#tiger-style-enforcement)
+7. [Common Code Patterns](#common-code-patterns)
+8. [Error Handling](#error-handling)
+9. [Memory Management](#memory-management)
+10. [Testing Patterns](#testing-patterns)
+
+---
+
+## Performance Optimization Strategy
+
+> **🚀 NEW (2025-10-28)**: Comprehensive optimization approach based on successful join optimization (593ms → 16ms, 97.3% improvement).
+
+### Quick Reference
+
+**For detailed optimization methodology, see: [`../docs/OPTIMIZATION_APPROACH.md`](../docs/OPTIMIZATION_APPROACH.md)**
+
+### Core Principles (TL;DR)
+
+1. **Profile First, Optimize Second**
+
+   - Always measure before optimizing
+   - Don't guess bottlenecks - use profiling tools
+   - Example: Join optimization revealed data copying (40-60% of time), NOT hash operations
+
+2. **Low-Hanging Fruit Priority**
+
+   - ① Algorithmic improvements (biggest impact)
+   - ② SIMD integration (2-5× speedup)
+   - ③ Memory layout (cache-friendly)
+   - ④ Code elimination (remove redundant work)
+
+3. **Measure Everything**
+   - Baseline performance (before)
+   - Expected improvement (calculation)
+   - Actual improvement (benchmark)
+   - Correctness (tests pass)
+
+### Current Optimization Status (Phase 1)
+
+| Operation   | Baseline   | Target   | Strategy        | Status               |
+| ----------- | ---------- | -------- | --------------- | -------------------- |
+| CSV Parse   | 555ms      | <550ms   | (Maintained)    | ✅                   |
+| Filter      | 14ms       | <15ms    | (Maintained)    | ✅                   |
+| **Sort**    | **6.73ms** | **<5ms** | **SIMD merge**  | ⏸️ **IN PROGRESS**   |
+| **GroupBy** | **1.55ms** | **<1ms** | **1-pass mean** | ⏸️ **NEXT**          |
+| Join        | 16ms       | <500ms   | Column memcpy   | ✅ **97.3% faster!** |
+
+**Target**: 5/5 benchmarks passing (currently 3/5)
+
+### When to Optimize
+
+**✅ DO optimize when**:
+
+- Performance target missed (benchmark failing)
+- Profiling identifies clear bottleneck
+- Have time budget allocated (Phase 1: 3 days)
+
+**❌ DON'T optimize when**:
+
+- Tests failing (fix correctness first)
+- No profiling data (would be guessing)
+- Target already met (premature optimization)
+
+### SIMD Integration Pattern
+
+**Available** (from `src/core/simd.zig`):
+
+- `compareFloat64Batch()` - 2× throughput for comparisons
+- `compareInt64Batch()` - 2× throughput for comparisons
+- `findNextSpecialChar()` - 16× throughput for CSV scanning
+
+**Usage Pattern**:
+
+```zig
+// Check if SIMD available
+if (simd.simd_available and data.len >= simd_width) {
+    return processWithSIMD(data);
+}
+// Fallback to scalar
+return processScalar(data);
+```
+
+**When SIMD Helps**:
+
+- ✅ Contiguous data access (arrays, columns)
+- ✅ Simple operations (compare, add, multiply)
+- ✅ Data size >16 bytes (overhead cost)
+
+**When SIMD Doesn't Help**:
+
+- ❌ Random memory access (hash lookups)
+- ❌ Complex branching (state machines)
+- ❌ Small data (<16 bytes)
+
+### Optimization Checklist
+
+Before implementing:
+
+- [ ] Measure baseline
+- [ ] Profile bottleneck
+- [ ] Estimate improvement
+- [ ] Implement
+- [ ] Verify correctness (tests pass)
+- [ ] Measure again
+- [ ] Document results
 
 ---
 
@@ -25,6 +126,7 @@
 ### Pitfall #1: Stack Allocations in WebAssembly 🔥
 
 **THE MISTAKE**:
+
 ```zig
 // ❌ FATAL ERROR - Will crash in browser!
 var memory_buffer: [100 * 1024 * 1024]u8 = undefined; // 100MB on stack
@@ -32,11 +134,13 @@ var fba = std.heap.FixedBufferAllocator.init(&memory_buffer);
 ```
 
 **WHY IT FAILS**:
+
 - WebAssembly stack limit: **1-2MB** (varies by browser)
 - This allocates 100MB on the stack → **instant stack overflow**
 - Code compiles fine, but crashes on first function call in browser
 
 **THE FIX**:
+
 ```zig
 // ✅ CORRECT - Use Wasm linear memory with @wasmMemoryGrow
 var heap_start: usize = undefined;
@@ -67,6 +171,7 @@ fn initHeap() !void {
 ### Pitfall #2: Using `usize` in Wasm Exports 🔥
 
 **THE MISTAKE**:
+
 ```zig
 // ❌ WRONG - usize is architecture-dependent
 export fn rozes_getColumnF64(
@@ -81,12 +186,14 @@ export fn rozes_getColumnF64(
 ```
 
 **WHY IT FAILS**:
+
 - Tiger Style requires **explicit types** (not `usize`)
 - `usize` = 32-bit in wasm32, 64-bit in wasm64
 - JavaScript expects consistent pointer size
 - Memory layout breaks between architectures
 
 **THE FIX**:
+
 ```zig
 // ✅ CORRECT - Explicit u32 for wasm32
 export fn rozes_getColumnF64(
@@ -111,6 +218,7 @@ export fn rozes_getColumnF64(
 ### Pitfall #3: Insufficient Assertions in Wasm Functions 🔥
 
 **THE MISTAKE**:
+
 ```zig
 // ❌ WRONG - Only 1 assertion (Tiger Style requires 2+)
 fn register(self: *DataFrameRegistry, df: *DataFrame) !i32 {
@@ -129,11 +237,13 @@ fn register(self: *DataFrameRegistry, df: *DataFrame) !i32 {
 ```
 
 **WHY IT FAILS**:
+
 - Tiger Style: **2+ assertions per function** (hard rule)
 - Missing: null pointer check, post-loop assertion
 - Wasm debugging is harder → need more assertions
 
 **THE FIX**:
+
 ```zig
 // ✅ CORRECT - 3 assertions
 fn register(self: *DataFrameRegistry, df: *DataFrame) !i32 {
@@ -161,6 +271,7 @@ fn register(self: *DataFrameRegistry, df: *DataFrame) !i32 {
 ### Pitfall #4: Missing Error Context in Data Processing 🔥
 
 **THE MISTAKE**:
+
 ```zig
 // ❌ WRONG - Silent error, no context
 df_ptr.* = parser.toDataFrame() catch |err| {
@@ -171,12 +282,14 @@ df_ptr.* = parser.toDataFrame() catch |err| {
 ```
 
 **WHY IT FAILS**:
+
 - CSV parsing fails at row 47,823 of 100K rows
 - User sees generic error code: `-2` (InvalidFormat)
 - **No row number, no column, no problematic data**
 - Hours wasted debugging
 
 **THE FIX**:
+
 ```zig
 // ✅ CORRECT - Log error context with row/column
 df_ptr.* = parser.toDataFrame() catch |err| {
@@ -194,6 +307,7 @@ df_ptr.* = parser.toDataFrame() catch |err| {
 ```
 
 **REQUIRED**: Add to CSVParser:
+
 ```zig
 pub const CSVParser = struct {
     // ... existing fields
@@ -210,6 +324,7 @@ pub const CSVParser = struct {
 ### Pitfall #5: JavaScript Memory Layout Assumptions 🔥
 
 **THE MISTAKE**:
+
 ```javascript
 // ❌ WRONG - Overwrites memory at offset 0!
 const csvPtr = 0; // Hardcoded offset 0
@@ -218,11 +333,13 @@ csvArray.set(csvBytes, csvPtr); // ❌ Destroys Wasm globals/stack!
 ```
 
 **WHY IT FAILS**:
+
 - Wasm memory offset 0 contains globals and stack
 - Writing CSV data there **corrupts memory silently**
 - Hard to debug (intermittent crashes)
 
 **THE FIX**:
+
 ```zig
 // 1. Export allocation functions in wasm.zig
 export fn rozes_alloc(size: u32) u32 {
@@ -253,18 +370,23 @@ const csvBytes = new TextEncoder().encode(csvText);
 const csvPtr = wasm.instance.exports.rozes_alloc(csvBytes.length);
 
 if (csvPtr === 0) {
-    throw new RozesError(ErrorCode.OutOfMemory, 'Failed to allocate CSV buffer');
+  throw new RozesError(ErrorCode.OutOfMemory, "Failed to allocate CSV buffer");
 }
 
 try {
-    const csvArray = new Uint8Array(wasm.memory.buffer, csvPtr, csvBytes.length);
-    csvArray.set(csvBytes);
+  const csvArray = new Uint8Array(wasm.memory.buffer, csvPtr, csvBytes.length);
+  csvArray.set(csvBytes);
 
-    const handle = wasm.instance.exports.rozes_parseCSV(csvPtr, csvBytes.length, 0, 0);
-    checkResult(handle, 'Failed to parse CSV');
-    return new DataFrame(handle, wasm);
+  const handle = wasm.instance.exports.rozes_parseCSV(
+    csvPtr,
+    csvBytes.length,
+    0,
+    0
+  );
+  checkResult(handle, "Failed to parse CSV");
+  return new DataFrame(handle, wasm);
 } finally {
-    wasm.instance.exports.rozes_free_buffer(csvPtr, csvBytes.length);
+  wasm.instance.exports.rozes_free_buffer(csvPtr, csvBytes.length);
 }
 ```
 
@@ -275,6 +397,7 @@ try {
 ### Pitfall #6: Redundant Bounds Checks After Assertions 🔴
 
 **THE MISTAKE**:
+
 ```zig
 // ❌ WRONG - Redundant check after assertion
 fn get(self: *DataFrameRegistry, handle: i32) ?*DataFrame {
@@ -287,11 +410,13 @@ fn get(self: *DataFrameRegistry, handle: i32) ?*DataFrame {
 ```
 
 **WHY IT FAILS**:
+
 - Wastes CPU cycles checking twice
 - Assertion already catches invalid handles in debug
 - Release builds skip assertions, so check is needed BUT should be first
 
 **THE FIX**:
+
 ```zig
 // ✅ CORRECT - Assertions only (debug) or check only (release)
 fn get(self: *DataFrameRegistry, handle: i32) ?*DataFrame {
@@ -313,6 +438,7 @@ fn get(self: *DataFrameRegistry, handle: i32) ?*DataFrame {
 ### Pitfall #7: Missing Post-Loop Assertions 🔴
 
 **THE MISTAKE**:
+
 ```zig
 // ❌ WRONG - Loop finishes but no assertion
 var i: u32 = 0;
@@ -327,11 +453,13 @@ return error.TooManyDataFrames;
 ```
 
 **WHY IT FAILS**:
+
 - Tiger Style requires post-loop assertions
 - Verifies loop terminated correctly
 - Catches off-by-one errors
 
 **THE FIX**:
+
 ```zig
 // ✅ CORRECT - Post-loop assertion
 var i: u32 = 0;
@@ -370,6 +498,7 @@ Before committing any Wasm code, verify:
 ### Pitfall #8: WebAssembly Binary Size Bloat 🟡
 
 **THE OBSERVATION** (2025-10-27):
+
 ```bash
 # Before Tiger Style fixes
 zig-out/bin/rozes.wasm: 47KB (but crashed in browser)
@@ -380,23 +509,27 @@ zig-out/bin/rozes.wasm: 52KB (+5KB, but works correctly)
 
 **WHY SIZE INCREASED**:
 Adding safety features increases code size:
+
 1. **Error logging code**: `std.log.err()` with string formatting (+2KB)
 2. **New exports**: `rozes_alloc()` and `rozes_free_buffer()` (+1KB)
 3. **Row/column tracking**: Additional fields and logic (+1KB)
 4. **Assertions**: 30+ new assertions add debug info (+1KB)
 
 **IMPORTANT TRADEOFF**:
+
 - ✅ **47KB binary** = crashes instantly (unusable)
 - ✅ **52KB binary** = works correctly with meaningful errors (usable)
 
 **Better is WORKING, not smaller!**
 
 **LESSON**: Binary size is a secondary concern compared to correctness:
+
 ```
 Correctness > Safety > Size > Speed
 ```
 
 **When to Optimize Size**:
+
 - ✅ After Tiger Style compliance is achieved
 - ✅ After all tests pass
 - ✅ Use `strip` and `wasm-opt` tools
@@ -406,6 +539,7 @@ Correctness > Safety > Size > Speed
 - ❌ NOT by sacrificing safety
 
 **Size Optimization Strategies** (for 0.2.0+):
+
 1. Use `wasm-opt -Oz` from Binaryen (can save 20-30%)
 2. Use `wasm-strip` to remove debug info (release builds only)
 3. Lazy-load rarely-used functions
@@ -413,6 +547,7 @@ Correctness > Safety > Size > Speed
 5. Pool string constants
 
 **Acceptable Size Range**:
+
 - **MVP (0.1.0)**: 50-100KB is fine
 - **Production (0.2.0+)**: Target <80KB after optimization
 
@@ -423,6 +558,7 @@ Correctness > Safety > Size > Speed
 ### Pitfall #9: WASM Size Optimization Strategy 🟢
 
 **CURRENT STATUS** (2025-10-27):
+
 ```bash
 # After Phase 1 optimizations
 zig-out/bin/rozes.wasm: 74 KB minified (~40 KB gzipped)
@@ -437,6 +573,7 @@ csv-parse: 28.4 KB minified (7.0 KB gzipped)
 **OPTIMIZATION PHASES**:
 
 #### Phase 1: Build System (COMPLETED - 14% reduction)
+
 ```bash
 # Before: 86 KB
 # After: 74 KB
@@ -448,6 +585,7 @@ csv-parse: 28.4 KB minified (7.0 KB gzipped)
 ```
 
 **Build Configuration** (`build.zig`):
+
 ```zig
 // Development build: Debug mode, keep all logging
 const wasm_dev = b.addExecutable(.{
@@ -472,6 +610,7 @@ const wasm_opt = b.addSystemCommand(&[_][]const u8{
 ```
 
 **Commands**:
+
 ```bash
 # Production (optimized, 74 KB)
 zig build wasm
@@ -481,6 +620,7 @@ zig build wasm-dev
 ```
 
 **Comptime Conditional Logging** (`src/wasm.zig`):
+
 ```zig
 const builtin = @import("builtin");
 const enable_logging = builtin.mode == .Debug;
@@ -502,6 +642,7 @@ logError("CSV parsing failed: {} at row {}", .{err, row_idx});
 #### Phase 2: Dead Code Elimination (NEXT - Target: 45 KB)
 
 **Remove Unused Exports**:
+
 ```zig
 // ❌ BEFORE - Unimplemented function (adds ~1 KB)
 export fn rozes_getColumnString(...) i32 {
@@ -515,6 +656,7 @@ export fn rozes_getColumnString(...) i32 {
 ```
 
 **String Interning**:
+
 ```zig
 // ❌ BEFORE - Duplicated error strings throughout code
 return @intFromEnum(ErrorCode.OutOfMemory);
@@ -534,6 +676,7 @@ const ErrorMessages = struct {
 #### Phase 3: Selective Assertions (Target: 32 KB)
 
 **Debug-Only Assertion Wrapper**:
+
 ```zig
 fn debugAssert(condition: bool) void {
     if (@import("builtin").mode == .Debug) {
@@ -543,6 +686,7 @@ fn debugAssert(condition: bool) void {
 ```
 
 **Keep Safety-Critical Assertions**:
+
 ```zig
 // ✅ KEEP in production (safety)
 std.debug.assert(idx < self.length);        // Bounds check
@@ -558,6 +702,7 @@ debugAssert(@intFromPtr(result.?) != 0);    // Redundant pointer check
 **Strategy**: Keep 60-70% of assertions (150-170 out of 248)
 
 **Lazy DataFrame Registry**:
+
 ```zig
 // ❌ BEFORE - Always allocates 8 KB
 frames: [MAX_DATAFRAMES]?*DataFrame,  // 1000 × 8 bytes
@@ -574,6 +719,7 @@ frames: std.ArrayList(?*DataFrame),
 #### Phase 4: Advanced Optimizations (IF NEEDED - Target: <28 KB)
 
 **FixedBufferAllocator** (replaces GeneralPurposeAllocator):
+
 ```zig
 // ❌ BEFORE - GPA has thread-safety overhead (~5-8 KB)
 var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -592,6 +738,7 @@ fn initAllocator() !void {
 ```
 
 **Manual Export List** (disable rdynamic):
+
 ```zig
 // ❌ BEFORE - Exports ALL functions marked 'export'
 wasm.rdynamic = true;
@@ -610,6 +757,7 @@ wasm.export_symbol_names = &[_][]const u8{
 ```
 
 **LTO (Link-Time Optimization)**:
+
 ```zig
 wasm.want_lto = true;  // Cross-function optimization, 5-10% reduction
 ```
@@ -621,11 +769,13 @@ wasm.want_lto = true;  // Cross-function optimization, 5-10% reduction
 #### Size Optimization Checklist
 
 Before optimizing:
+
 - [ ] **Tiger Style compliance achieved** (all tests pass)
 - [ ] **Correctness verified** (browser tests work)
 - [ ] **Performance targets met** (100K rows <1s)
 
 Optimization order:
+
 - [ ] Phase 1: Build system + comptime logging ✅ DONE (86 KB → 74 KB)
 - [ ] Phase 2: Dead code removal (Target: 45 KB)
 - [ ] Phase 3: Selective assertions + lazy registry (Target: 32 KB)
@@ -640,6 +790,7 @@ Optimization order:
 | Phase 4 | 28 KB | 1.5x | 1.0x | 🟢 Good |
 
 **Gzipped (what users download)**:
+
 - 74 KB → ~40 KB gzipped (5.9x vs Papa Parse 6.8 KB)
 - 32 KB → ~10 KB gzipped (1.5x vs Papa Parse) ✅ **Target**
 
@@ -649,914 +800,251 @@ Optimization order:
 
 ## Tiger Style Learnings from 0.2.0 & 0.3.0 Implementation
 
-> **🎯 UPDATED (2025-10-28)**: Critical learnings from implementing string column support (0.2.0) and sort operations (0.3.0). These patterns prevent common Tiger Style violations.
+> **🎯 UPDATED (2025-10-28)**: Critical learnings from implementing string support & sort operations.
 
 ### Learning #1: Buffer Growth Loops MUST Be Bounded 🔥
 
-**THE PROBLEM**:
+**Violation**: Unbounded `while (new_size < needed_size) { new_size *= 2; }` allows infinite loops on overflow or malicious input.
+
+**Solution**: Use explicit MAX constant, counter, post-assertion:
+
 ```zig
-// ❌ CRITICAL VIOLATION - Unbounded loop
-pub fn append(self: *StringColumn, allocator: Allocator, str: []const u8) !void {
-    const needed_size = self.buffer_used + str.len;
-
-    var new_size = self.buffer.len;
-    while (new_size < needed_size) {  // ❌ NO EXPLICIT MAX!
-        new_size *= 2;  // Potential infinite loop
-    }
-
-    // ... rest of implementation
+const MAX_BUFFER_GROWTH_ITERATIONS: u32 = 32;
+var growth_iterations: u32 = 0;
+while (new_size < needed_size and growth_iterations < MAX_BUFFER_GROWTH_ITERATIONS) : (growth_iterations += 1) {
+    new_size = @min(new_size * 2, MAX_BUFFER_SIZE);
 }
+std.debug.assert(growth_iterations < MAX_BUFFER_GROWTH_ITERATIONS or new_size >= needed_size);
 ```
-
-**WHY IT VIOLATES TIGER STYLE**:
-- Tiger Style: **ALL loops must have explicit MAX constant**
-- Missing bound allows infinite loop on edge cases:
-  - Arithmetic overflow: `new_size * 2` wraps around
-  - Malicious input: attacker requests MAX_INT string size
-  - Logic errors: `needed_size` miscalculated
-
-**THE CORRECT PATTERN**:
-```zig
-// ✅ CORRECT - Bounded loop with explicit MAX
-const MAX_BUFFER_GROWTH_ITERATIONS: u32 = 32; // 2^32 = 4GB max
-const MAX_BUFFER_SIZE: u32 = 1_000_000_000;  // 1GB limit
-
-pub fn append(self: *StringColumn, allocator: Allocator, str: []const u8) !void {
-    std.debug.assert(str.len <= MAX_FIELD_LENGTH); // Pre-condition #1
-    std.debug.assert(self.count < self.capacity);   // Pre-condition #2
-
-    const needed_size = self.buffer_used + @as(u32, @intCast(str.len));
-
-    // Bounded loop with explicit MAX
-    var growth_iterations: u32 = 0;
-    var new_size = self.buffer.len;
-    while (new_size < needed_size and growth_iterations < MAX_BUFFER_GROWTH_ITERATIONS) : (growth_iterations += 1) {
-        new_size = @min(new_size * 2, MAX_BUFFER_SIZE);
-        if (new_size >= MAX_BUFFER_SIZE) break;
-    }
-
-    std.debug.assert(growth_iterations < MAX_BUFFER_GROWTH_ITERATIONS or new_size >= needed_size); // Post-condition #3
-    std.debug.assert(new_size <= MAX_BUFFER_SIZE); // Invariant #4
-
-    if (new_size < needed_size) return error.BufferTooLarge;
-
-    // ... rest of implementation
-}
-```
-
-**KEY POINTS**:
-1. **Explicit MAX constant**: `MAX_BUFFER_GROWTH_ITERATIONS = 32`
-2. **Counter variable**: `growth_iterations` tracks loop progress
-3. **Post-loop assertion**: Verify termination condition
-4. **Bounds check**: `@min(new_size * 2, MAX_BUFFER_SIZE)`
-5. **Error on overflow**: Return error instead of silent failure
-
-**RULE**: Every growth loop needs: MAX constant, counter variable, post-loop assertion.
 
 ---
 
 ### Learning #2: Simple Functions Need Creative Assertions 🔥
 
-**THE PROBLEM**:
+**Violation**: Single assertion in getter (Tiger Style requires 2+).
+
+**Solutions** (pick appropriate pattern):
+
+- **Pattern A**: Input + output assertions
+- **Pattern B**: Invariant + type check
+- **Pattern C**: Runtime + comptime assertion
+
 ```zig
-// ❌ VIOLATION - Only 1 assertion (Tiger Style requires 2+)
-pub fn asStringColumn(self: *const Series) ?*const StringColumn {
-    std.debug.assert(self.length <= MAX_ROWS); // Only 1 assertion!
-
-    return switch (self.data) {
-        .String => |*col| col,
-        else => null,
-    };
-}
+// ✅ Example: Assert invariant + non-null pointer
+std.debug.assert(self.length <= MAX_ROWS);
+std.debug.assert(@intFromPtr(self) != 0);
 ```
-
-**WHY IT'S HARD**:
-- Function is only 6 lines → feels "too simple" to need 2+ assertions
-- Temptation: "This is just a getter, what could go wrong?"
-- **BUT**: Tiger Style requires 2+ assertions for ALL functions
-
-**SOLUTION PATTERNS**:
-
-**Pattern A: Assert on input AND output**:
-```zig
-// ✅ CORRECT - 3 assertions
-pub fn asStringColumn(self: *const Series) ?*const StringColumn {
-    std.debug.assert(self.length <= MAX_ROWS); // Pre-condition #1: Invariant
-    std.debug.assert(@intFromPtr(self) != 0);  // Pre-condition #2: Non-null self
-
-    const result = switch (self.data) {
-        .String => |*col| col,
-        else => null,
-    };
-
-    std.debug.assert(result == null or result.?.count <= MAX_ROWS); // Post-condition #3
-    return result;
-}
-```
-
-**Pattern B: Assert type safety**:
-```zig
-// ✅ CORRECT - 2 assertions
-pub fn asStringColumn(self: *const Series) ?*const StringColumn {
-    std.debug.assert(self.length <= MAX_ROWS); // Assertion #1: Invariant
-    std.debug.assert(self.value_type == .String or self.value_type != .String); // Assertion #2: Type check (documents intent)
-
-    return switch (self.data) {
-        .String => |*col| col,
-        else => null,
-    };
-}
-```
-
-**Pattern C: Assert struct size (comptime)**:
-```zig
-// ✅ CORRECT - 2 assertions (1 runtime, 1 comptime)
-pub fn asStringColumn(self: *const Series) ?*const StringColumn {
-    comptime {
-        std.debug.assert(@sizeOf(StringColumn) <= 64); // Comptime assertion
-    }
-
-    std.debug.assert(self.length <= MAX_ROWS); // Runtime assertion
-
-    return switch (self.data) {
-        .String => |*col| col,
-        else => null,
-    };
-}
-```
-
-**RULE**: Simple functions still need 2+ assertions. Be creative: check inputs, outputs, types, or sizes.
 
 ---
 
 ### Learning #3: Function Length - The 70-Line Hard Limit 🔥
 
-**THE PROBLEM**:
-```zig
-// ❌ VIOLATION - Function is 85 lines (limit is 70)
-fn fillDataFrame(df: *DataFrame, rows: []const [][]const u8, column_types: []ValueType) !void {
-    // ... 85 lines of code handling Int64, Float64, Bool, String columns ...
-}
-```
+**Violation**: Functions >70 lines must be split by responsibility.
 
-**WHY IT'S HARD**:
-- Temptation: "But it's all related logic, splitting would be awkward"
-- Counter: "But Tiger Style says ≤70 lines is a HARD RULE"
-
-**THE CORRECT APPROACH**: Split by responsibility, not arbitrarily
+**Approach**: Extract type-specific helpers
 
 ```zig
-// ✅ CORRECT - Main orchestration (≤70 lines)
-fn fillDataFrame(df: *DataFrame, rows: []const [][]const u8, column_types: []ValueType) !void {
-    std.debug.assert(rows.len > 0);                     // Pre-condition #1
-    std.debug.assert(column_types.len == df.columns.len); // Pre-condition #2
-
-    for (df.columns, 0..) |*col, col_idx| {
-        switch (column_types[col_idx]) {
-            .Int64 => try fillInt64Column(col, rows, col_idx),
-            .Float64 => try fillFloat64Column(col, rows, col_idx),
-            .Bool => try fillBoolColumn(col, rows, col_idx),
-            .String => try fillStringColumn(col, rows, col_idx, df.arena.allocator()),
-            else => return error.UnsupportedType,
+// Main orchestration ≤70 lines
+fn fillDataFrame(...) !void {
+    for (df.columns, 0..) |*col, idx| {
+        switch (column_types[idx]) {
+            .Int64 => try fillInt64Column(col, rows, idx),
+            .Float64 => try fillFloat64Column(col, rows, idx),
+            // ...
         }
     }
-
-    std.debug.assert(df.row_count == @as(u32, @intCast(rows.len))); // Post-condition #3
 }
 
-// Extract helpers (each ≤40 lines)
+// Type-specific helpers ≤40 lines each
 fn fillInt64Column(col: *Series, rows: []const [][]const u8, col_idx: usize) !void {
-    std.debug.assert(col.value_type == .Int64); // Assertion #1
-    const buffer = col.asInt64Buffer() orelse return error.TypeMismatch;
-
-    for (rows, 0..) |row, row_idx| {
-        if (col_idx >= row.len or row[col_idx].len == 0) {
-            buffer[row_idx] = 0; // Empty = 0
-        } else {
-            buffer[row_idx] = std.fmt.parseInt(i64, row[col_idx], 10) catch |err| {
-                std.log.err("Failed to parse Int64 at row {}, col {}: '{s}'",
-                    .{ row_idx, col_idx, row[col_idx] });
-                return error.TypeMismatch;
-            };
-        }
-    }
-
-    std.debug.assert(buffer.len >= rows.len); // Assertion #2
-}
-
-fn fillStringColumn(col: *Series, rows: []const [][]const u8, col_idx: usize, allocator: std.mem.Allocator) !void {
-    std.debug.assert(col.value_type == .String); // Assertion #1
-
-    var row_idx: u32 = 0;
-    while (row_idx < MAX_ROWS and row_idx < rows.len) : (row_idx += 1) {
-        const row = rows[row_idx];
-        const field = if (col_idx < row.len) row[col_idx] else "";
-        try col.appendString(allocator, field);
-    }
-
-    std.debug.assert(row_idx == rows.len); // Assertion #2
+    // ...
 }
 ```
 
-**BENEFITS OF SPLITTING**:
-1. **Each function ≤70 lines** - Tiger Style compliant ✅
-2. **Single responsibility** - Each handles one column type
-3. **Reusable** - Can call `fillInt64Column()` independently
-4. **Testable** - Can test each type separately
-5. **Readable** - Clear intent from function name
-
-**RULE**: When function exceeds 70 lines, split by responsibility (not arbitrarily). Extract helpers for type-specific logic.
+**Benefits**: Single responsibility, testable, reusable.
 
 ---
 
 ### Learning #4: Error Context is Data Integrity 🔥
 
-**THE PROBLEM**:
-```zig
-// ❌ BAD - No error context
-buffer[row_idx] = std.fmt.parseFloat(f64, row[col_idx]) catch {
-    return error.TypeMismatch; // User sees: "Error -2" ← USELESS!
-};
-```
+**Violation**: Silent errors with generic codes (user sees "Error -2", no context).
 
-**WHY IT MATTERS**:
-- Data scientists process 100K+ row CSVs daily
-- Parse fails at row 47,823 with error: `TypeMismatch`
-- **NO row number, NO column name, NO problematic value**
-- Hours wasted: export to Excel, search for bad data, re-process
+**Solution**: Log row, column name, field value:
 
-**THE CORRECT PATTERN**:
 ```zig
-// ✅ EXCELLENT - Full error context
 buffer[row_idx] = std.fmt.parseFloat(f64, row[col_idx]) catch |err| {
-    std.log.err("Failed to parse Float64 at row {}, col {} ('{s}'): field='{s}' - {}", .{
-        row_idx,
-        col_idx,
-        df.columns[col_idx].name,  // Column name
-        row[col_idx],               // Problematic value
-        err,                        // Error type
-    });
+    std.log.err("Parse failed at row {}, col {} ('{s}'): field='{s}' - {}",
+        .{row_idx, col_idx, df.columns[col_idx].name, row[col_idx], err});
     return error.TypeMismatch;
 };
 ```
 
-**WHAT TO LOG**:
-1. **Row index**: Exact location in CSV
-2. **Column index**: Which column failed
-3. **Column name**: Human-readable context
-4. **Field value**: Problematic data (first 50 chars)
-5. **Error type**: What went wrong
+**Example output**: `Parse failed at row 47823, col 3 ('price'): field='$19.99' - InvalidCharacter`
 
-**REAL EXAMPLE**:
-```
-Failed to parse Float64 at row 47823, col 3 ('price'): field='$19.99' - InvalidCharacter
-```
-
-**User action**: Remove $ symbol from price column → re-process successfully
-
-**RULE**: Every parse error MUST log: row, column, field value. Error context = data integrity.
+User fixes issue immediately instead of hours debugging.
 
 ---
 
 ### Learning #5: String Operations Need Performance Notes 🔥
 
-**THE PROBLEM**:
-```zig
-// ❌ UNDOCUMENTED - Performance characteristics unclear
-pub fn appendString(self: *Series, allocator: Allocator, str: []const u8) !void {
-    // ... implementation uses exponential growth (2×) ...
-}
-```
+**Violation**: Undocumented performance characteristics.
 
-**WHY IT MATTERS**:
-- String append may trigger buffer reallocation
-- Exponential growth (2×) = O(log n) reallocations
-- BUT: Each reallocation copies ALL existing strings
-- For 10K rows: worst case O(n log n) complexity
-- Users need to know: "Should I pre-allocate?"
+**Solution**: Document complexity, growth strategy, optimization hints:
 
-**THE CORRECT PATTERN**:
-```zig
-/// Appends a string value to a string series
+````zig
+/// Appends string value to series
 ///
-/// **Performance Characteristics**:
-/// - Buffer growth: Exponential (2× doubling) to amortize allocations
-/// - Worst case: O(n) per append with frequent reallocations
-/// - Best case: O(1) per append with sufficient initial capacity
-/// - Total for n appends: O(n log n) worst case, O(n) amortized
-///
-/// **Optimization Strategy**:
-/// For optimal performance, pre-allocate StringColumn with estimated
-/// capacity based on preview rows:
+/// **Performance**: O(n log n) worst case, O(n) amortized (exponential 2× growth)
+/// **Optimization**: Pre-allocate with estimated capacity:
 /// ```zig
-/// const estimated_capacity = preview_rows.len * 2;
-/// const estimated_buffer_size = estimated_capacity * average_string_length;
-/// const col = try StringColumn.init(allocator, estimated_capacity, estimated_buffer_size);
+/// const col = try StringColumn.init(allocator,
+///     estimated_capacity, estimated_buffer_size);
 /// ```
-///
-/// **Memory Management**:
-/// All allocations managed by ArenaAllocator - freed on DataFrame.deinit()
-pub fn appendString(self: *Series, allocator: Allocator, str: []const u8) !void {
-    std.debug.assert(str.len <= MAX_FIELD_LENGTH); // Pre-condition #1
-    std.debug.assert(self.value_type == .String);   // Pre-condition #2
-
-    // ... implementation ...
-}
-```
-
-**WHAT TO DOCUMENT**:
-1. **Complexity**: Big-O for single operation and total
-2. **Growth strategy**: How buffer expands (2×, 1.5×, etc.)
-3. **Optimization hints**: How to improve performance
-4. **Example code**: Show pre-allocation pattern
-5. **Memory notes**: Who manages lifetime
-
-**RULE**: String operations MUST document: complexity, growth strategy, optimization hints.
+pub fn appendString(...) !void
+````
 
 ---
 
-### Learning #6: WASM Size Optimization - The Low-Hanging Fruit 🔥
+### Learning #6: WASM Size Optimization - Low-Hanging Fruit 🔥
 
-**THE DISCOVERY**:
-From wasm.zig refactoring (2025-10-27):
-- **Before**: 102 KB (initial implementation)
-- **After**: 74 KB (-28 KB = 27% reduction)
-- **Change**: Simple optimizations, NO algorithmic changes
+**Discovery**: 102 KB → 74 KB (27% reduction) with simple optimizations.
 
-**TECHNIQUES THAT WORKED**:
+**Techniques**:
 
-#### 1. String Interning for Error Messages
-```zig
-// ❌ BEFORE - Each error allocates string
-return std.fmt.allocPrint(allocator, "CSV parsing failed: {}", .{err}); // +500 bytes each
+1. **String interning**: Deduplicate error messages (~2 KB)
+2. **Conditional logging**: Strip in release builds (~3 KB)
+3. **Inline hot paths**: Small frequently-called functions (~1 KB)
+4. **Lazy allocation**: ArrayList instead of fixed arrays (~8 KB)
+5. **Conditional assertions**: Debug-only where safe (~500 bytes)
 
-// ✅ AFTER - Deduplicate common strings
-const ErrorStrings = struct {
-    pub const csv_parse_failed = "CSV parsing failed";
-    pub const out_of_memory = "Out of memory";
-    pub const invalid_format = "Invalid format";
-    pub const invalid_handle = "Invalid handle";
-    pub const column_not_found = "Column not found";
-    pub const type_mismatch = "Type mismatch";
-};
-
-return ErrorStrings.csv_parse_failed; // Reuses same string
-```
-**Savings**: ~2 KB (error strings deduplicated)
-
-#### 2. Conditional Logging
-```zig
-// ❌ BEFORE - Logging always included
-std.log.err("Error: {}", .{err}); // +3 KB of logging infrastructure
-
-// ✅ AFTER - Strip in release builds
-const enable_logging = builtin.mode == .Debug;
-
-fn logError(comptime fmt: []const u8, args: anytype) void {
-    if (enable_logging) {
-        std.log.err(fmt, args);
-    }
-}
-```
-**Savings**: ~3 KB (logging stripped in ReleaseSmall)
-
-#### 3. Inline Hot Paths
-```zig
-// ❌ BEFORE - Function call overhead
-pub fn get(self: *DataFrameRegistry, handle: i32) ?*DataFrame {
-    // ... 10 lines ...
-}
-
-// ✅ AFTER - Inline small functions
-pub inline fn get(self: *DataFrameRegistry, handle: i32) ?*DataFrame {
-    // ... 10 lines ...
-}
-```
-**Savings**: ~1 KB (reduced call overhead)
-
-#### 4. ArrayList Instead of Fixed Array
-```zig
-// ❌ BEFORE - Wastes space for unused slots
-frames: [MAX_DATAFRAMES]?*DataFrame{null} ** 1000, // 8 KB even if using 2 slots!
-
-// ✅ AFTER - Only allocate what's needed
-frames: std.ArrayList(?*DataFrame).initCapacity(allocator, 4), // 32 bytes initially
-```
-**Savings**: ~8 KB (lazy allocation)
-
-#### 5. Conditional Assertions
-```zig
-// ❌ BEFORE - Assertions always compiled
-std.debug.assert(handle >= 0);
-std.debug.assert(handle < MAX_DATAFRAMES);
-std.debug.assert(result != null);
-
-// ✅ AFTER - Group assertions in debug block
-if (builtin.mode == .Debug) {
-    std.debug.assert(handle >= 0);
-    std.debug.assert(handle < MAX_DATAFRAMES);
-    std.debug.assert(result != null);
-}
-```
-**Savings**: ~500 bytes (assertions stripped in release)
-
-**TOTAL SAVINGS**: 28 KB (27% reduction)
-
-**RULE**: Apply low-hanging fruit FIRST (string interning, conditional logging, inline, lazy allocation). DON'T sacrifice safety for size until Phase 1 complete.
+**Rule**: Apply low-hanging fruit first. Don't sacrifice safety for size.
 
 ---
 
 ### Learning #7: Type Inference - Default to String, Not Error 🔥
 
-**THE DISCOVERY**:
-From 0.1.0 (numeric-only) to 0.2.0 (string support):
-- **Before**: Mixed types → `error.TypeMismatch` → parse fails
-- **After**: Mixed types → infer as String → parse succeeds
-- **Impact**: Conformance 17% → 97% (+80 percentage points!)
+**Discovery**: Conformance jumped from 17% → 97% by defaulting to String instead of erroring.
 
-**THE OLD PATTERN** (0.1.0):
+**Pattern**:
+
 ```zig
-// ❌ FAILS on mixed data
-fn inferColumnType(rows: []const [][]const u8, col_idx: usize) !ValueType {
-    var all_int = true;
-    var all_float = true;
-
-    for (rows) |row| {
-        const field = row[col_idx];
-        if (!tryParseInt64(field)) all_int = false;
-        if (!tryParseFloat64(field)) all_float = false;
-    }
-
+fn inferColumnType(...) ValueType {
+    // Try Bool, Int64, Float64 first
+    if (all_bool) return .Bool;
     if (all_int) return .Int64;
     if (all_float) return .Float64;
 
-    // MVP: String not supported
-    return error.TypeMismatch; // ❌ Parse fails!
+    return .String; // ✅ Universal fallback, no error
 }
 ```
 
-**THE NEW PATTERN** (0.2.0):
-```zig
-// ✅ SUCCEEDS on mixed data
-fn inferColumnType(rows: []const [][]const u8, col_idx: usize) !ValueType {
-    var all_int = true;
-    var all_float = true;
-    var all_bool = true;
-    var all_empty = true;
-
-    for (rows) |row| {
-        const field = row[col_idx];
-        if (field.len == 0) continue;
-
-        all_empty = false;
-        if (!tryParseInt64(field)) all_int = false;
-        if (!tryParseFloat64(field)) all_float = false;
-        if (!tryParseBool(field)) all_bool = false;
-    }
-
-    // Inference priority order
-    if (all_empty) return .String;        // Empty → String (safe default)
-    if (all_bool) return .Bool;           // Boolean
-    if (all_int) return .Int64;           // Pure integers
-    if (all_float) return .Float64;       // Floats or mixed int/float
-
-    return .String; // ✅ Default to String (NO ERROR!)
-}
-```
-
-**KEY INSIGHTS**:
-1. **String is the universal fallback** - Can represent any data
-2. **No data loss** - Mixed data preserved as strings
-3. **Fail gracefully** - Infer as String instead of error
-4. **Preserve user data** - Never reject valid CSV
-
-**EXAMPLE**:
-```csv
-age
-30
-abc
-42
-```
-
-**Before** (0.1.0): Parse fails with `error.TypeMismatch`
-**After** (0.2.0): Parse succeeds, column type = String, values = ["30", "abc", "42"]
-
-**RULE**: Type inference should NEVER fail. Default to String for mixed or unknown data.
+**Key insight**: String is universal fallback - preserves all data, never rejects valid CSV.
 
 ---
 
 ### Learning #8: Test Coverage - 85% is Good, But Know the Gaps 🔥
 
-**THE ACHIEVEMENT**:
-- **Test count**: 83 tests (up from 50)
-- **Coverage**: ~85% (exceeds 80% target)
-- **Pass rate**: 100% (83/83 passing)
-- **Conformance**: 97% (34/35 CSV test files)
+**Achievement**: 83 tests, 85% coverage, 97% conformance.
 
-**BUT**: 15% uncovered code still exists. WHERE?
+**Known gaps** (15% uncovered):
 
-**COVERAGE GAPS** (identified during review):
+1. **Error recovery paths** (~5%): Buffer/registry limits, UTF-8 validation failures
+2. **Edge case combinations** (~5%): MAX_COLUMNS, u32 max rows, extreme data
+3. **WASM-specific paths** (~3%): Memory growth failures, encoding edge cases
+4. **Comptime assertions** (~2%): Struct size/alignment checks
 
-1. **Error recovery paths** (~5% of code):
-   - What happens when `appendString()` hits 1GB buffer limit?
-   - What happens when registry hits 1000 DataFrame limit?
-   - What happens on UTF-8 validation failures?
-   - **Why uncovered**: Need fuzzing or stress tests
-
-2. **Edge case combinations** (~5% of code):
-   - DataFrame with 10,000 columns (MAX_COLUMNS)
-   - CSV with 4 billion rows (u32 max)
-   - String column with 1 million unique strings
-   - **Why uncovered**: Performance test territory (Phase 7)
-
-3. **WASM-specific paths** (~3% of code):
-   - Registry initialization failures
-   - Memory growth failures (@wasmMemoryGrow returns -1)
-   - Column name encoding edge cases (UTF-8 in JS → Zig)
-   - **Why uncovered**: Need browser integration tests
-
-4. **Comptime assertions** (~2% of code):
-   - Struct size validations
-   - Alignment checks
-   - Type size guarantees
-   - **Why uncovered**: Comptime code not measured by runtime coverage
-
-**RULE**: 85% coverage is excellent for MVP. Document known gaps. Add stress tests in 0.3.0.
+**Rule**: 85% excellent for MVP. Document gaps, add stress tests later.
 
 ---
 
 ### Learning #9: IEEE 754 NaN Handling - The Silent Killer 🔥
 
-**THE DISCOVERY**:
-From 0.3.0 sort implementation (2025-10-28):
-- **Test Failure**: `sort handles NaN in Float64 column` - panics with "unreachable code"
-- **Root Cause**: `std.math.order(a, b)` crashes when either `a` or `b` is NaN
-- **Impact**: 112/113 tests passing → **CRITICAL BLOCKER** for production
+**Discovery**: `std.math.order(a, b)` panics on NaN, crashing sort operations.
 
-**THE PROBLEM**:
+**Problem**: NaN common in real data (sensor failures, 0/0, data import errors). One NaN crashes 1M-row sort.
+
+**Solution**: Check NaN before comparison:
+
 ```zig
-// ❌ CRITICAL BUG - Panics on NaN values
 .Float64 => blk: {
-    const data = col.asFloat64Buffer() orelse unreachable;
-    const a = data[idx_a];
-    const b = data[idx_b];
-    break :blk std.math.order(a, b);  // ❌ PANICS if a or b is NaN
-},
-```
-
-**WHY IT MATTERS**:
-1. **Real-World Data**: NaN values are common in data science:
-   - Missing data (failed sensor readings, null values)
-   - Computation errors (0/0, √-1, log(-1))
-   - Infinity arithmetic (∞ - ∞, ∞/∞)
-   - Data import errors (Excel, CSV parsing)
-
-2. **Production Impact**:
-   - Sorting a 1M-row DataFrame with **one NaN** crashes the entire application
-   - Users don't expect sort to fail on "valid" float values
-   - Silent data filtering (removing NaNs) leads to incorrect analysis
-
-3. **IEEE 754 Semantics**:
-   - NaN is **unordered**: `NaN < x`, `NaN > x`, `NaN == x` are ALL false
-   - `std.math.order()` assumes total ordering → panics on NaN
-   - Standard library doesn't handle NaN in comparison functions
-
-**REAL-WORLD SCENARIO**:
-```csv
-sensor_id,temperature,humidity
-1,23.5,65.2
-2,NaN,58.1        ← Sensor 2 malfunction
-3,25.1,62.8
-4,24.0,NaN        ← Humidity sensor offline
-5,22.8,60.5
-```
-
-**Before Fix**: `df.sort("temperature")` → **CRASH** (unreachable code)
-**After Fix**: `df.sort("temperature")` → NaN rows sorted to end, stable order preserved
-
-**THE CORRECT PATTERN**:
-```zig
-// ✅ CORRECT - IEEE 754 compliant NaN handling
-.Float64 => blk: {
-    const data = col.asFloat64Buffer() orelse unreachable;
     const a = data[idx_a];
     const b = data[idx_b];
 
-    // Check for NaN first (NaN sorts to end)
     const a_is_nan = std.math.isNan(a);
     const b_is_nan = std.math.isNan(b);
 
     if (a_is_nan and b_is_nan) {
-        // Both NaN: preserve original order (stable sort guarantee)
-        break :blk std.math.order(idx_a, idx_b);
+        break :blk std.math.order(idx_a, idx_b); // Preserve order
     } else if (a_is_nan) {
-        // a is NaN, b is not: a > b (NaN sorts to end)
-        break :blk .gt;
+        break :blk .gt; // NaN sorts to end
     } else if (b_is_nan) {
-        // b is NaN, a is not: a < b (NaN sorts to end)
         break :blk .lt;
     } else {
-        // Neither is NaN: normal comparison
-        break :blk std.math.order(a, b);
+        break :blk std.math.order(a, b); // Normal comparison
     }
-},
-```
-
-**COMPLETE IEEE 754 EDGE CASES**:
-```zig
-test "sort handles all IEEE 754 special values" {
-    const allocator = testing.allocator;
-
-    const cols = [_]ColumnDesc{
-        ColumnDesc.init("value", .Float64, 0),
-    };
-
-    var df = try DataFrame.create(allocator, &cols, 9);
-    defer df.deinit();
-
-    const values = df.columns[0].asFloat64Buffer() orelse unreachable;
-    // Test data: [42.0, NaN, -Inf, 10.0, +Inf, -0.0, 0.0, NaN, 95.0]
-    values[0] = 42.0;
-    values[1] = std.math.nan(f64);   // NaN #1
-    values[2] = -std.math.inf(f64);  // -Infinity
-    values[3] = 10.0;
-    values[4] = std.math.inf(f64);   // +Infinity
-    values[5] = -0.0;                // Negative zero
-    values[6] = 0.0;                 // Positive zero
-    values[7] = std.math.nan(f64);   // NaN #2
-    values[8] = 95.0;
-    df.row_count = 9;
-
-    var sorted = try sort_mod.sort(&df, allocator, "value", .Ascending);
-    defer sorted.deinit();
-
-    const sorted_values = sorted.columns[0].asFloat64Buffer() orelse unreachable;
-
-    // Expected order: [-Inf, -0.0, 0.0, 10.0, 42.0, 95.0, +Inf, NaN, NaN]
-    //                  (negative values first, then positives, then infinities, NaN last)
-
-    // Verify -Inf is first
-    try testing.expect(std.math.isInf(sorted_values[0]) and sorted_values[0] < 0);
-
-    // Verify zeros (note: -0.0 == 0.0 in comparison, order preserved by stable sort)
-    try testing.expectEqual(@as(f64, -0.0), sorted_values[1]); // or 0.0, both valid
-    try testing.expectEqual(@as(f64, 0.0), sorted_values[2]);  // or -0.0, both valid
-
-    // Verify finite values in order
-    try testing.expectEqual(@as(f64, 10.0), sorted_values[3]);
-    try testing.expectEqual(@as(f64, 42.0), sorted_values[4]);
-    try testing.expectEqual(@as(f64, 95.0), sorted_values[5]);
-
-    // Verify +Inf
-    try testing.expect(std.math.isInf(sorted_values[6]) and sorted_values[6] > 0);
-
-    // Verify NaN values at end (stable order preserved)
-    try testing.expect(std.math.isNan(sorted_values[7]));
-    try testing.expect(std.math.isNan(sorted_values[8]));
-}
-
-test "sort preserves original order of NaN values (stable sort)" {
-    const allocator = testing.allocator;
-
-    // Create DataFrame with multiple NaN values and IDs
-    const cols = [_]ColumnDesc{
-        ColumnDesc.init("id", .Int64, 0),
-        ColumnDesc.init("value", .Float64, 1),
-    };
-
-    var df = try DataFrame.create(allocator, &cols, 5);
-    defer df.deinit();
-
-    const ids = df.columns[0].asInt64Buffer() orelse unreachable;
-    const values = df.columns[1].asFloat64Buffer() orelse unreachable;
-
-    // Test data: NaN values with different IDs
-    ids[0] = 1; values[0] = std.math.nan(f64);
-    ids[1] = 2; values[1] = std.math.nan(f64);
-    ids[2] = 3; values[2] = 42.0;
-    ids[3] = 4; values[3] = std.math.nan(f64);
-    ids[4] = 5; values[4] = 10.0;
-    df.row_count = 5;
-
-    var sorted = try sort_mod.sort(&df, allocator, "value", .Ascending);
-    defer sorted.deinit();
-
-    const sorted_ids = sorted.columns[0].asInt64Buffer() orelse unreachable;
-    const sorted_values = sorted.columns[1].asFloat64Buffer() orelse unreachable;
-
-    // Expected: [10.0, 42.0, NaN(id=1), NaN(id=2), NaN(id=4)]
-    // Verify finite values first
-    try testing.expectEqual(@as(f64, 10.0), sorted_values[0]);
-    try testing.expectEqual(@as(i64, 5), sorted_ids[0]);
-
-    try testing.expectEqual(@as(f64, 42.0), sorted_values[1]);
-    try testing.expectEqual(@as(i64, 3), sorted_ids[1]);
-
-    // Verify NaN values in ORIGINAL ORDER (stable sort)
-    try testing.expect(std.math.isNan(sorted_values[2]));
-    try testing.expectEqual(@as(i64, 1), sorted_ids[2]); // First NaN
-
-    try testing.expect(std.math.isNan(sorted_values[3]));
-    try testing.expectEqual(@as(i64, 2), sorted_ids[3]); // Second NaN
-
-    try testing.expect(std.math.isNan(sorted_values[4]));
-    try testing.expectEqual(@as(i64, 4), sorted_ids[4]); // Third NaN
 }
 ```
 
-**OTHER IEEE 754 GOTCHAS**:
+**When to check**: Comparisons (sort, min, max), aggregations, type inference, export.
 
-1. **Negative Zero**:
+**Impact**: 112/113 tests → 113/113 tests. Production-ready.
+
+### Learning #10: For-Loops Over Runtime Data are Tiger Style Violations 🔥
+
+**Discovery**: 6 unbounded for-loops found in new modules - all over user-controlled data.
+
+**Violation**: `for (items) |item|` over runtime collections (categories, strings, columns, rows).
+
+**Risk**: Malicious input triggers unbounded iteration (1M categories, GB strings, 100K columns).
+
+**Solution**: Bounded while loops with MAX constant:
+
 ```zig
-// ❌ WRONG - Treats -0.0 differently from 0.0
-if (value == 0.0) return .eq;  // Misses -0.0!
+// ✅ CORRECT
+std.debug.assert(items.len <= MAX_ITEMS);
 
-// ✅ CORRECT - -0.0 == 0.0 (IEEE 754 semantics)
-if (value == 0.0) return .eq;  // Correctly handles both
-// Note: std.math.order() already handles -0.0 == 0.0
+var i: u32 = 0;
+while (i < MAX_ITEMS and i < items.len) : (i += 1) {
+    // process items[i]
+}
+std.debug.assert(i == items.len);
 ```
 
-2. **Infinity Arithmetic**:
+**When for-loops OK**:
+
+- ✅ Comptime iteration: `comptime for (type_list) |T|`
+- ✅ Fixed arrays: `for ([_]ValueType{.Int64, .Float64}) |t|`
+- ❌ Runtime data: `for (df.columns)`, `for (rows)`, `for (str, 0..)`
+
+**Detection**: `grep -n "for.*|" src/**/*.zig | grep -v "comptime"`
+
+**Impact**: 6 violations fixed → 0 unbounded loops.
+
+---
+
+### Learning #11: For-Loops in Aggregations Need Explicit Bounds 🔥
+
+**Discovery**: 9 unbounded for-loops in groupBy/join operations.
+
+**Risk**: Large groups (1M rows with same key) or join collisions (100K matches) trigger unbounded iteration.
+
+**Pattern**: Same as Learning #10 - replace with bounded while loops.
+
+**Special case - join collision handling**:
+
 ```zig
-// ✅ HANDLED by std.math.order()
-const a = std.math.inf(f64);     // +Infinity
-const b = -std.math.inf(f64);    // -Infinity
-std.math.order(a, b) == .gt;     // +Inf > -Inf ✅
-std.math.order(a, 100.0) == .gt; // +Inf > finite ✅
-```
+var entry_idx: u32 = 0;
+while (entry_idx < MAX_MATCHES_PER_KEY and entry_idx < entries.len) : (entry_idx += 1) {
+    // process match
+}
 
-3. **Denormal Numbers**:
-```zig
-// ✅ HANDLED by std.math.order()
-const tiny = 1e-310;  // Near smallest Float64
-std.math.order(tiny, 0.0) == .gt; // Works correctly ✅
-```
-
-**WHEN TO CHECK FOR NaN**:
-
-1. **Always check in comparisons** (sort, min, max, equals)
-2. **Check before aggregations** (sum, mean ignore NaN or propagate?)
-3. **Check in type inference** (column with NaN → Float64, not Int64)
-4. **Check in export** (CSV: write "NaN" or empty field?)
-
-**RULE**: Any Float64 comparison function MUST handle NaN explicitly. Never assume `std.math.order()` works for all float values.
-
-**IMPACT**:
-- **Before**: 112/113 tests passing, 1 critical crash
-- **After**: 113/113 tests passing, production-ready
-- **Lesson**: IEEE 754 special values (NaN, Inf, -0.0) are first-class citizens in data processing
-
-### Learning #10: For-Loops in Aggregations Need Explicit Bounds 🔥
-
-**THE DISCOVERY**:
-From Milestone 0.3.0 code review (2025-10-28):
-- **3 unbounded for-loops** in groupBy aggregations (computeSum, computeMin, computeMax)
-- **6 unbounded for-loops** in join operations (probeHashTable, copyColumnData)
-- **Total**: 9 Tiger Style violations across 2 critical modules
-
-**THE PROBLEM**:
-```zig
-// ❌ CRITICAL VIOLATION - Unbounded for-loop in aggregation
-fn computeSum(self: *GroupBy, col: *const Series, group: *const Group) !f64 {
-    std.debug.assert(group.row_indices.items.len > 0); // Has pre-condition
-    _ = self;
-
-    var sum: f64 = 0.0;
-
-    switch (col.value_type) {
-        .Int64 => {
-            const data = col.asInt64() orelse return error.TypeMismatch;
-            for (group.row_indices.items) |row_idx| {  // ❌ NO EXPLICIT MAX!
-                sum += @as(f64, @floatFromInt(data[row_idx]));
-            }
-        },
-        // ... more cases
-    }
-    return sum; // ❌ Missing post-condition assertion!
+if (entry_idx >= MAX_MATCHES_PER_KEY and entry_idx < entries.len) {
+    std.log.warn("Join truncated: {} matches (limit {})",
+        .{entries.len, MAX_MATCHES_PER_KEY});
 }
 ```
 
-**WHY IT'S CRITICAL**:
-1. **Tiger Style Hard Rule**: ALL loops must have explicit MAX constant
-2. **Real-World Risk**: Large groups can have millions of rows
-   - Example: CSV with "Unknown" city → 1M rows in one group
-   - Example: Left join with duplicate key → 100K matches per key
-3. **Attack Vector**: Malicious CSV can trigger infinite loop
-   - CSV with all rows having same grouping key
-   - Join on constant column (e.g., all rows have country="US")
-
-**THE CORRECT PATTERN**:
-```zig
-// ✅ CORRECT - Bounded loop with pre/post-conditions
-fn computeSum(self: *GroupBy, col: *const Series, group: *const Group) !f64 {
-    std.debug.assert(group.row_indices.items.len > 0); // Pre-condition #1
-    std.debug.assert(group.row_indices.items.len <= MAX_ROWS); // Pre-condition #2
-    _ = self;
-
-    var sum: f64 = 0.0;
-
-    switch (col.value_type) {
-        .Int64 => {
-            const data = col.asInt64() orelse return error.TypeMismatch;
-
-            var i: u32 = 0;
-            while (i < MAX_ROWS and i < group.row_indices.items.len) : (i += 1) {
-                const row_idx = group.row_indices.items[i];
-                sum += @as(f64, @floatFromInt(data[row_idx]));
-            }
-            std.debug.assert(i == group.row_indices.items.len); // Post-condition #3
-        },
-        .Float64 => {
-            const data = col.asFloat64() orelse return error.TypeMismatch;
-
-            var i: u32 = 0;
-            while (i < MAX_ROWS and i < group.row_indices.items.len) : (i += 1) {
-                const row_idx = group.row_indices.items[i];
-                sum += data[row_idx];
-            }
-            std.debug.assert(i == group.row_indices.items.len); // Post-condition #3
-        },
-        else => return error.TypeMismatch,
-    }
-
-    return sum;
-}
-```
-
-**PATTERN FOR JOIN COLLISION HANDLING**:
-```zig
-// ✅ CORRECT - Bounded collision search with warning
-if (hash_map.get(key.hash)) |entries| {
-    var found_match = false;
-
-    var entry_idx: u32 = 0;
-    while (entry_idx < MAX_MATCHES_PER_KEY and entry_idx < entries.items.len) : (entry_idx += 1) {
-        const entry = entries.items[entry_idx];
-        if (try key.equals(entry.key, left_cache, right_cache)) {
-            try matches.append(allocator, .{
-                .left_idx = left_idx,
-                .right_idx = entry.key.row_idx,
-            });
-            found_match = true;
-        }
-    }
-
-    // Warn if truncated
-    if (entry_idx >= MAX_MATCHES_PER_KEY and entry_idx < entries.items.len) {
-        std.log.warn("Join key has {} matches (limit {}), results truncated",
-            .{entries.items.len, MAX_MATCHES_PER_KEY});
-    }
-    std.debug.assert(entry_idx <= MAX_MATCHES_PER_KEY or entry_idx == entries.items.len);
-
-    // ... handle unmatched left join rows
-}
-```
-
-**FILES THAT NEED FIXING**:
-
-**groupby.zig** (3 violations):
-1. `computeSum()` - line 399-410
-2. `computeMin()` - line 437-447
-3. `computeMax()` - line 465-475
-
-**join.zig** (6 violations):
-1. `probeHashTable()` - line 403-411 (collision chain iteration)
-2. `copyColumnData()` Int64 - line 545-551
-3. `copyColumnData()` Float64 - line 558-565
-4. `copyColumnData()` Bool - line 571-578
-5. `copyColumnData()` String - line 584-591
-
-**COMMON MISTAKE PATTERNS**:
-
-1. **"It's just iterating over a small array"**
-   - ❌ Wrong: Array comes from user input (can be arbitrarily large)
-   - ✅ Correct: Always use while loop with explicit MAX
-
-2. **"For-loops are more idiomatic than while loops"**
-   - ❌ Wrong: Tiger Style prioritizes safety over idioms
-   - ✅ Correct: Bounded while loops prevent infinite loops
-
-3. **"The array length is already checked elsewhere"**
-   - ❌ Wrong: Every function must be independently verifiable
-   - ✅ Correct: Add pre-condition assertion + bounded loop
-
-**DETECTION CHECKLIST**:
-```bash
-# Find unbounded for-loops in codebase:
-grep -n "for.*|.*|" src/**/*.zig | grep -v "while"
-
-# Common patterns to look for:
-for (items) |item| { ... }          # ❌ Unbounded
-for (rows, 0..) |row, i| { ... }    # ❌ Unbounded
-for (0..count) |i| { ... }          # ❌ Unbounded (Zig 0.12+)
-```
-
-**RULE**: Every `for` loop over runtime data MUST be replaced with bounded `while` loop + post-condition assertion.
-
-**IMPACT**:
-- **Before Review**: 9 unbounded for-loops across 2 critical modules
-- **After Fix**: 0 unbounded loops, all with MAX bounds + assertions
-- **Lesson**: For-loops feel safe but are Tiger Style violations for runtime data
+**Impact**: 9 violations fixed in groupby.zig (3) and join.zig (6).
 
 ---
 
@@ -1590,8 +1078,10 @@ src/
 ### Module Responsibilities
 
 #### `core/types.zig` - Type Definitions
+
 **Purpose**: Define all core types used throughout the project
 **Exports**:
+
 - `ValueType` enum
 - `ColumnDesc` struct
 - `CSVOptions` struct
@@ -1599,6 +1089,7 @@ src/
 - `ParseError` struct
 
 **Pattern**:
+
 ```zig
 //! Core type definitions for Rozes DataFrame library.
 //!
@@ -1636,12 +1127,15 @@ pub const ColumnDesc = struct {
 ```
 
 #### `core/series.zig` - Series Implementation
+
 **Purpose**: 1D homogeneous typed array
 **Exports**:
+
 - `Series` struct
 - Column accessor methods
 
 **Pattern**:
+
 ```zig
 //! Series - 1D homogeneous typed array
 //!
@@ -1717,13 +1211,16 @@ const StringColumn = struct {
 ```
 
 #### `core/dataframe.zig` - DataFrame Implementation
+
 **Purpose**: 2D tabular data structure
 **Exports**:
+
 - `DataFrame` struct
 - CSV import/export functions
 - Column operations
 
 **Pattern**:
+
 ```zig
 //! DataFrame - 2D tabular data structure
 //!
@@ -1796,12 +1293,15 @@ pub const DataFrame = struct {
 ```
 
 #### `csv/parser.zig` - CSV Parser
+
 **Purpose**: RFC 4180 compliant CSV parsing
 **Exports**:
+
 - `CSVParser` struct
 - Parsing functions
 
 **Pattern**:
+
 ```zig
 //! CSV Parser - RFC 4180 Compliant
 //!
@@ -1941,6 +1441,7 @@ pub const CSVParser = struct {
 ### Pattern 1: Bounded Loops with Explicit Limits
 
 **Always set maximum iterations**:
+
 ```zig
 const MAX_ROWS: u32 = 4_000_000_000; // u32 limit
 
@@ -1961,6 +1462,7 @@ pub fn parseCSV(buffer: []const u8) !DataFrame {
 **Common Unbounded Loop Issues**:
 
 1. **For loops over slices** - Need explicit MAX check:
+
 ```zig
 // ❌ WRONG - No explicit bound
 pub fn columnIndex(self: *const DataFrame, name: []const u8) ?usize {
@@ -1988,6 +1490,7 @@ pub fn columnIndex(self: *const DataFrame, name: []const u8) ?u32 {
 ```
 
 2. **Nested loops** - Both need bounds:
+
 ```zig
 // ❌ WRONG - Nested unbounded loops
 fn fillDataFrame(df: *DataFrame, rows: []const [][]const u8) !void {
@@ -2016,6 +1519,7 @@ fn fillDataFrame(df: *DataFrame, rows: []const [][]const u8) !void {
 ```
 
 3. **Character-by-character parsing** - Need field length limit:
+
 ```zig
 // ❌ WRONG - No field length limit
 pub fn nextField(self: *CSVParser) !?[]const u8 {
@@ -2049,6 +1553,7 @@ pub fn nextField(self: *CSVParser) !?[]const u8 {
 ### Pattern 2: Arena Allocator for Lifecycle Management
 
 **Use arena for grouped allocations**:
+
 ```zig
 pub fn fromCSVBuffer(
     allocator: std.mem.Allocator,
@@ -2077,6 +1582,7 @@ pub fn fromCSVBuffer(
 ### Pattern 3: Explicit Type Sizes
 
 **Use u32 instead of usize**:
+
 ```zig
 // ✅ Correct - consistent across platforms
 const row_index: u32 = 0;
@@ -2089,6 +1595,7 @@ const row_index: usize = 0;
 ### Pattern 4: Tagged Unions for Variant Types
 
 **Use tagged unions for type-safe variants**:
+
 ```zig
 pub const Value = union(ValueType) {
     Int64: i64,
@@ -2110,6 +1617,7 @@ pub const Value = union(ValueType) {
 ### Pattern 5: Comptime for Zero-Overhead Abstractions
 
 **Use comptime for type-generic code**:
+
 ```zig
 fn generateColumnAccessor(comptime T: type) type {
     return struct {
@@ -2137,6 +1645,7 @@ const Int64Accessor = generateColumnAccessor(i64);
 ### 2+ Assertions Per Function
 
 **Every function MUST have at least 2 assertions**:
+
 ```zig
 pub fn get(self: *const Series, idx: u32) ?Value {
     std.debug.assert(idx < self.length);     // Assertion 1: Bounds check
@@ -2149,6 +1658,7 @@ pub fn get(self: *const Series, idx: u32) ?Value {
 **Common Assertion Patterns**:
 
 1. **Simple Getters/Setters** - Still need 2 assertions:
+
 ```zig
 // ❌ WRONG - Only returns value
 pub fn isEmpty(self: *const Series) bool {
@@ -2165,6 +1675,7 @@ pub fn isEmpty(self: *const Series) bool {
 ```
 
 2. **Enum Methods** - Validate enum value:
+
 ```zig
 // ❌ WRONG - No assertions
 pub fn sizeOf(self: ValueType) ?u8 {
@@ -2193,6 +1704,7 @@ pub fn sizeOf(self: ValueType) ?u8 {
 ```
 
 3. **Validation Functions** - Check BEFORE errors:
+
 ```zig
 // ❌ WRONG - Assertions after error checks
 pub fn validate(self: CSVOptions) !void {
@@ -2217,6 +1729,7 @@ pub fn validate(self: CSVOptions) !void {
 ### Explicit Error Handling
 
 **Never ignore errors**:
+
 ```zig
 // ✅ Correct - propagate error
 const df = try DataFrame.fromCSVBuffer(allocator, buffer, opts);
@@ -2237,6 +1750,7 @@ const df = DataFrame.create(allocator, cols, 0) catch null;
 **CRITICAL: Silent Error Handling = Data Loss**:
 
 1. **Never catch and return default values**:
+
 ```zig
 // ❌ CRITICAL DATA LOSS - User has no idea allocation failed!
 pub fn columnNames(self: *const DataFrame) []const []const u8 {
@@ -2257,6 +1771,7 @@ pub fn columnNames(self: *const DataFrame, allocator: std.mem.Allocator) ![]cons
 ```
 
 2. **Never catch parse errors and default to 0**:
+
 ```zig
 // ❌ CRITICAL DATA LOSS - "abc" becomes 0, user never knows!
 for (rows, 0..) |row, row_idx| {
@@ -2287,6 +1802,7 @@ for (rows, 0..) |row, row_idx| {
 ### Functions ≤70 Lines
 
 **Break large functions into helpers**:
+
 ```zig
 // ❌ Too large (>70 lines)
 pub fn parseCSV(buffer: []const u8) !DataFrame {
@@ -2404,6 +1920,7 @@ fn rowsToColumns(
 ### Error Set Definitions
 
 **Define clear error sets per module**:
+
 ```zig
 // src/csv/parser.zig
 pub const CSVError = error{
@@ -2428,6 +1945,7 @@ pub const DataFrameError = error{
 ### Error Context
 
 **Provide context when returning errors**:
+
 ```zig
 pub fn column(self: *const DataFrame, name: []const u8) !*const Series {
     std.debug.assert(self.series.len > 0);
@@ -2451,6 +1969,7 @@ pub fn column(self: *const DataFrame, name: []const u8) !*const Series {
 ### Allocation Strategy
 
 **DataFrame lifecycle**:
+
 1. Create arena allocator
 2. All DataFrame allocations use arena
 3. Single `free()` call cleans up everything
@@ -2498,6 +2017,7 @@ const MemoryTracker = struct {
 **CRITICAL**: Every code change MUST include tests. No exceptions.
 
 **Test Coverage Requirements**:
+
 1. **Unit Tests** - Every public function must have at least one unit test
 2. **Error Case Tests** - Test error conditions (bounds, invalid input, parse failures)
 3. **Integration Tests** - Test workflows (CSV → DataFrame → operations)
@@ -2509,6 +2029,7 @@ const MemoryTracker = struct {
 ### Unit Test Template
 
 **Every public function needs a unit test**:
+
 ```zig
 // src/core/series.zig
 test "Series.len returns correct length" {
@@ -2599,6 +2120,7 @@ test "CSV parse → DataFrame → CSV export round-trip" {
 ### Test Examples for Common Issues
 
 **1. Test Error Handling - Never Silent Failures**:
+
 ```zig
 test "fillDataFrame fails on type mismatch instead of silently defaulting to 0" {
     const allocator = std.testing.allocator;
@@ -2629,6 +2151,7 @@ test "columnNames propagates allocation error instead of returning empty array" 
 ```
 
 **2. Test BOM Handling**:
+
 ```zig
 test "CSVParser skips UTF-8 BOM at start of file" {
     const allocator = std.testing.allocator;
@@ -2649,6 +2172,7 @@ test "CSVParser skips UTF-8 BOM at start of file" {
 ```
 
 **3. Test Line Ending Handling**:
+
 ```zig
 test "CSVParser handles CRLF line endings" {
     const allocator = std.testing.allocator;
@@ -2694,6 +2218,7 @@ test "CSVParser handles LF-only line endings (Unix)" {
 ```
 
 **4. Test Empty CSV Handling**:
+
 ```zig
 test "toDataFrame allows empty CSV with headers only" {
     const allocator = std.testing.allocator;
@@ -2716,6 +2241,7 @@ test "toDataFrame allows empty CSV with headers only" {
 ```
 
 **5. Test Type Inference Edge Cases**:
+
 ```zig
 test "inferColumnType detects Float64 when preview has ints but later rows have decimals" {
     const allocator = std.testing.allocator;
@@ -2745,6 +2271,7 @@ test "inferColumnType detects Float64 when preview has ints but later rows have 
 ```
 
 **6. Test Bounded Loops**:
+
 ```zig
 test "nextField rejects field larger than MAX_FIELD_LENGTH" {
     const allocator = std.testing.allocator;
@@ -2770,6 +2297,7 @@ test "nextField rejects field larger than MAX_FIELD_LENGTH" {
 ```
 
 **7. Test RFC 4180 Conformance** (using testdata files):
+
 ```zig
 test "RFC 4180: 01_simple.csv" {
     const allocator = std.testing.allocator;
@@ -2818,6 +2346,7 @@ test "RFC 4180: 04_embedded_newlines.csv - quoted fields with newlines" {
 ### RFC 4180 Compliance Checklist
 
 **MUST HANDLE**:
+
 1. ✅ Quoted fields with embedded delimiters
 2. ✅ Quoted fields with embedded newlines
 3. ✅ Escaped quotes (`""` → `"`)
@@ -2830,6 +2359,7 @@ test "RFC 4180: 04_embedded_newlines.csv - quoted fields with newlines" {
 ### Critical CSV Parsing Issues
 
 **1. BOM Detection**:
+
 ```zig
 // ❌ MISSING - CSV may start with BOM
 pub fn init(allocator: std.mem.Allocator, buffer: []const u8, opts: CSVOptions) !CSVParser {
@@ -2861,6 +2391,7 @@ pub fn init(allocator: std.mem.Allocator, buffer: []const u8, opts: CSVOptions) 
 ```
 
 **2. Line Ending Normalization** - Avoid code duplication:
+
 ```zig
 // ❌ WRONG - CRLF handling duplicated in 3 places
 } else if (char == '\n' or char == '\r') {
@@ -2897,6 +2428,7 @@ fn skipLineEnding(self: *CSVParser) void {
 ```
 
 **3. Empty CSV Handling**:
+
 ```zig
 // ❌ WRONG - Returns error for headers-only CSV
 if (data_rows.len == 0) {
@@ -2912,6 +2444,7 @@ if (data_rows.len == 0) {
 ```
 
 **4. Type Inference Edge Cases**:
+
 ```zig
 // ❌ WRONG - 100 row preview too small for 1M row file
 const preview_count = @min(self.opts.previewRows, @as(u32, @intCast(data_rows.len)));
@@ -2926,6 +2459,7 @@ else
 ```
 
 **5. Int vs Float Ambiguity**:
+
 ```zig
 // ❌ WRONG - "42" parses as Int, but row 101 might have "42.5"
 if (all_int) return .Int64;
@@ -2963,12 +2497,14 @@ if (has_decimals) {
 ### Running Conformance Tests
 
 **Quick Command**:
+
 ```bash
 # Test all CSV files in testdata/
 zig build conformance
 ```
 
 **What It Tests**:
+
 - 10 RFC 4180 compliance tests (`testdata/csv/rfc4180/`)
 - 7 edge case tests (`testdata/csv/edge_cases/`)
 - 18 external test suites (`testdata/external/`)
@@ -3026,6 +2562,7 @@ pub fn main() !void {
 ```
 
 **Why Runtime Discovery**:
+
 - ✅ Avoids Zig 0.15 `@embedFile` package path restrictions
 - ✅ Automatically includes new test files (just drop them in testdata/)
 - ✅ Works with external test suites
@@ -3034,11 +2571,13 @@ pub fn main() !void {
 ### Current Results (MVP - Numeric Only)
 
 **MVP Status** (0.1.0):
+
 - ✅ **6/35 passing** (numeric-only CSVs)
 - ⏸️ **3 skipped** (deferred to 0.2.0 - string support)
 - ❌ **26 failing** (contain string columns - expected for MVP)
 
 **Skipped Tests**:
+
 ```zig
 const string_tests = [_][]const u8{
     "04_embedded_newlines.csv", // Has string columns
@@ -3052,6 +2591,7 @@ const string_tests = [_][]const u8{
 ### Adding New Test Files
 
 **To add a new conformance test**:
+
 1. Drop the CSV file in `testdata/csv/rfc4180/` or `testdata/csv/edge_cases/`
 2. Run `zig build conformance`
 3. The test is automatically discovered and run
@@ -3060,15 +2600,16 @@ const string_tests = [_][]const u8{
 
 ### Expected Results by Version
 
-| Version | Target Pass Rate | Reason |
-|---------|------------------|--------|
-| 0.1.0 (MVP) | 17% (6/35) | Numeric columns only (Int64, Float64) |
-| 0.2.0 | 80% (28/35) | Add string column support |
-| 0.3.0 | 100% (35/35) | Handle all edge cases |
+| Version     | Target Pass Rate | Reason                                |
+| ----------- | ---------------- | ------------------------------------- |
+| 0.1.0 (MVP) | 17% (6/35)       | Numeric columns only (Int64, Float64) |
+| 0.2.0       | 80% (28/35)      | Add string column support             |
+| 0.3.0       | 100% (35/35)     | Handle all edge cases                 |
 
 ### Debugging Failed Tests
 
 **To debug a specific test file**:
+
 ```bash
 # 1. Identify failing test from conformance output
 zig build conformance | grep FAIL
@@ -3093,6 +2634,7 @@ zig build test -Dtest-filter="Debug: 02_quoted_fields"
 ```
 
 **Common Failure Patterns**:
+
 1. **String columns** → Wait for 0.2.0 (expected)
 2. **Quoted fields** → Check `ParserState.InQuotedField` logic
 3. **Embedded newlines** → Check `skipLineEnding()` in quoted state

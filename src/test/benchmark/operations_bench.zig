@@ -58,7 +58,6 @@ pub fn benchmarkFilter(
     std.debug.assert(filtered.row_count > 0); // Post-condition
     std.debug.assert(filtered.row_count < rows); // Post-condition
 
-
     return BenchmarkResult.compute(start, end, rows);
 }
 
@@ -81,7 +80,6 @@ pub fn benchmarkSort(
 
     // Verify row count matches
     std.debug.assert(sorted.row_count == rows); // Post-condition
-
 
     return BenchmarkResult.compute(start, end, rows);
 }
@@ -115,7 +113,6 @@ pub fn benchmarkGroupBy(
     std.debug.assert(result.row_count > 0); // Post-condition
     std.debug.assert(result.row_count <= 5); // Post-condition: max 5 unique names
 
-
     return BenchmarkResult.compute(start, end, rows);
 }
 
@@ -146,7 +143,6 @@ pub fn benchmarkJoin(
     // Verify we got join results
     std.debug.assert(joined.row_count > 0); // Post-condition
 
-
     // Use total processed rows for throughput
     const total_rows = left_rows + right_rows;
     return BenchmarkResult.compute(start, end, total_rows);
@@ -174,7 +170,6 @@ pub fn benchmarkHead(
     // Verify result
     std.debug.assert(head.row_count == @min(n, rows)); // Post-condition
 
-
     return BenchmarkResult.compute(start, end, rows);
 }
 
@@ -199,7 +194,6 @@ pub fn benchmarkDropDuplicates(
     // Verify deduplication happened
     std.debug.assert(deduped.row_count <= rows); // Post-condition
     std.debug.assert(deduped.row_count <= 5); // Post-condition: max 5 unique names
-
 
     return BenchmarkResult.compute(start, end, rows);
 }

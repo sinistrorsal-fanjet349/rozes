@@ -17,6 +17,7 @@
 const std = @import("std");
 const types = @import("types.zig");
 const ValueType = types.ValueType;
+const CategoricalColumn = @import("categorical.zig").CategoricalColumn;
 
 /// A single column of typed data
 pub const Series = struct {
@@ -207,6 +208,34 @@ pub const Series = struct {
         };
     }
 
+    /// Access as CategoricalColumn (null if wrong type)
+    ///
+    /// Returns a reference to the underlying CategoricalColumn.
+    /// Use this for direct access to categorical data.
+    pub fn asCategoricalColumn(self: *const Series) ?*const CategoricalColumn {
+        std.debug.assert(self.length <= MAX_ROWS); // Pre-condition #1: Invariant
+        std.debug.assert(@sizeOf(@TypeOf(self.data)) > 0); // Pre-condition #2: Union size check
+
+        return switch (self.data) {
+            .Categorical => |cat_ptr| cat_ptr,
+            else => null,
+        };
+    }
+
+    /// Access as mutable CategoricalColumn (null if wrong type)
+    ///
+    /// Returns a mutable reference to the underlying CategoricalColumn.
+    /// Use this when you need to modify the categorical data (e.g., append).
+    pub fn asCategoricalColumnMut(self: *Series) ?*CategoricalColumn {
+        std.debug.assert(self.length <= MAX_ROWS); // Pre-condition #1: Invariant
+        std.debug.assert(@sizeOf(@TypeOf(self.data)) > 0); // Pre-condition #2: Union size check
+
+        return switch (self.data) {
+            .Categorical => |cat_ptr| cat_ptr,
+            else => null,
+        };
+    }
+
     /// Get a single string at index (null if wrong type or out of bounds)
     ///
     /// Convenience method for accessing individual strings.
@@ -219,6 +248,7 @@ pub const Series = struct {
 
         return switch (self.data) {
             .String => |*col| col.get(idx),
+            .Categorical => |cat_ptr| cat_ptr.get(idx),
             else => null,
         };
     }
@@ -234,6 +264,7 @@ pub const Series = struct {
             .Float64 => |slice| SeriesValue{ .Float64 = slice[idx] },
             .Bool => |slice| SeriesValue{ .Bool = slice[idx] },
             .String => |*col| SeriesValue{ .String = col.get(idx) },
+            .Categorical => |cat_ptr| SeriesValue{ .Categorical = cat_ptr.get(idx) },
             .Null => SeriesValue.Null,
         };
     }
@@ -281,6 +312,7 @@ pub const Series = struct {
             .Float64 => |slice| slice.len,
             .Bool => |slice| slice.len,
             .String => |col| col.capacity,
+            .Categorical => |cat_ptr| cat_ptr.capacity,
             .Null => 0,
         };
 
@@ -509,6 +541,7 @@ pub const SeriesData = union(ValueType) {
     Float64: []f64,
     String: StringColumn, // ✅ Use StringColumn (0.2.0+)
     Bool: []bool,
+    Categorical: *CategoricalColumn, // ✅ Mutable pointer to categorical column (0.4.0+)
     Null: void,
 
     /// Allocates storage for the given type
@@ -532,6 +565,11 @@ pub const SeriesData = union(ValueType) {
                 const initial_buffer_size = capacity * avg_string_length;
                 const col = try StringColumn.init(allocator, capacity, initial_buffer_size);
                 break :blk SeriesData{ .String = col };
+            },
+            .Categorical => blk: {
+                const cat_ptr = try allocator.create(CategoricalColumn);
+                cat_ptr.* = try CategoricalColumn.init(allocator, capacity);
+                break :blk SeriesData{ .Categorical = cat_ptr };
             },
             .Null => SeriesData.Null,
         };
@@ -564,6 +602,11 @@ pub const SeriesData = union(ValueType) {
                 var mutable_col = col.*;
                 mutable_col.deinit(allocator);
             },
+            .Categorical => |cat_ptr| {
+                var mutable_cat = @constCast(cat_ptr);
+                mutable_cat.deinit(allocator);
+                allocator.destroy(mutable_cat);
+            },
             .Null => {},
         }
     }
@@ -575,6 +618,7 @@ pub const SeriesValue = union(ValueType) {
     Float64: f64,
     String: []const u8,
     Bool: bool,
+    Categorical: []const u8,
     Null: void,
 };
 
@@ -869,10 +913,10 @@ test "StringColumn.offset calculation for multiple strings" {
     var col = try StringColumn.init(allocator, 5, 100);
     defer col.deinit(allocator);
 
-    try col.append(allocator, "A");     // offsets[0] = 1
-    try col.append(allocator, "BB");    // offsets[1] = 3
-    try col.append(allocator, "CCC");   // offsets[2] = 6
-    try col.append(allocator, "DDDD");  // offsets[3] = 10
+    try col.append(allocator, "A"); // offsets[0] = 1
+    try col.append(allocator, "BB"); // offsets[1] = 3
+    try col.append(allocator, "CCC"); // offsets[2] = 6
+    try col.append(allocator, "DDDD"); // offsets[3] = 10
     try col.append(allocator, "EEEEE"); // offsets[4] = 15
 
     try testing.expectEqual(@as(u32, 1), col.offsets[0]);

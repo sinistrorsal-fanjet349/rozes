@@ -42,11 +42,11 @@ test "innerJoin on single column returns only matching rows" {
     left.columns[0].length = 4;
     // left.columns[1].length = 4;
     left.columns[2].length = 4;
-        left.columns[0].length = 4;
+    left.columns[0].length = 4;
 
     // left.columns[1].length = 4;
 
-        left.columns[2].length = 4;
+    left.columns[2].length = 4;
 
     left.row_count = 4;
 
@@ -68,11 +68,9 @@ test "innerJoin on single column returns only matching rows" {
     right_dept_ids[1] = 20;
     try right.columns[1].appendString(allocator, "Sales");
 
-        right.columns[0].length = 2;
-
+    right.columns[0].length = 2;
 
     // right.columns[1].length = 2;
-
 
     right.row_count = 2;
 
@@ -133,11 +131,9 @@ test "leftJoin includes all left rows with null for unmatched" {
     left_emp_ids[2] = 3;
     left_dept_ids[2] = 20; // Has match
 
-        left.columns[0].length = 3;
+    left.columns[0].length = 3;
 
-
-        left.columns[1].length = 3;
-
+    left.columns[1].length = 3;
 
     left.row_count = 3;
 
@@ -159,11 +155,9 @@ test "leftJoin includes all left rows with null for unmatched" {
     right_dept_ids[1] = 20;
     right_budgets[1] = 75000.0;
 
-        right.columns[0].length = 2;
+    right.columns[0].length = 2;
 
-
-        right.columns[1].length = 2;
-
+    right.columns[1].length = 2;
 
     right.row_count = 2;
 
@@ -234,14 +228,11 @@ test "innerJoin on multiple columns matches composite keys" {
     left_quarters[3] = 3; // No match in right
     left_revenues[3] = 250.0;
 
-        left.columns[0].length = 4;
+    left.columns[0].length = 4;
 
+    left.columns[1].length = 4;
 
-        left.columns[1].length = 4;
-
-
-        left.columns[2].length = 4;
-
+    left.columns[2].length = 4;
 
     left.row_count = 4;
 
@@ -271,14 +262,11 @@ test "innerJoin on multiple columns matches composite keys" {
     right_quarters[2] = 1;
     right_targets[2] = 180.0;
 
-        right.columns[0].length = 3;
+    right.columns[0].length = 3;
 
+    right.columns[1].length = 3;
 
-        right.columns[1].length = 3;
-
-
-        right.columns[2].length = 3;
-
+    right.columns[2].length = 3;
 
     right.row_count = 3;
 
@@ -329,11 +317,9 @@ test "innerJoin handles column name conflicts with _right suffix" {
     left_ids[1] = 2;
     left_scores[1] = 92.0;
 
-        left.columns[0].length = 2;
+    left.columns[0].length = 2;
 
-
-        left.columns[1].length = 2;
-
+    left.columns[1].length = 2;
 
     left.row_count = 2;
 
@@ -355,11 +341,9 @@ test "innerJoin handles column name conflicts with _right suffix" {
     right_ids[1] = 2;
     right_scores[1] = 15.0;
 
-        right.columns[0].length = 2;
+    right.columns[0].length = 2;
 
-
-        right.columns[1].length = 2;
-
+    right.columns[1].length = 2;
 
     right.row_count = 2;
 
@@ -403,7 +387,7 @@ test "innerJoin returns empty DataFrame when no matches" {
     const left_ids = left.columns[0].asInt64Buffer() orelse unreachable;
     left_ids[0] = 1;
     left_ids[1] = 2;
-        left.columns[0].length = 2;
+    left.columns[0].length = 2;
 
     left.row_count = 2;
 
@@ -418,7 +402,7 @@ test "innerJoin returns empty DataFrame when no matches" {
     const right_ids = right.columns[0].asInt64Buffer() orelse unreachable;
     right_ids[0] = 99;
     right_ids[1] = 100;
-        right.columns[0].length = 2;
+    right.columns[0].length = 2;
 
     right.row_count = 2;
 
@@ -448,7 +432,7 @@ test "innerJoin returns error when join column not found" {
 
     const left_ids = left.columns[0].asInt64Buffer() orelse unreachable;
     left_ids[0] = 1;
-        left.columns[0].length = 1;
+    left.columns[0].length = 1;
 
     left.row_count = 1;
 
@@ -462,7 +446,7 @@ test "innerJoin returns error when join column not found" {
 
     const right_ids = right.columns[0].asInt64Buffer() orelse unreachable;
     right_ids[0] = 1;
-        right.columns[0].length = 1;
+    right.columns[0].length = 1;
 
     right.row_count = 1;
 
@@ -495,11 +479,9 @@ test "innerJoin handles duplicate keys in right table" {
     left_ids[1] = 2;
     left_values[1] = 20.0;
 
-        left.columns[0].length = 2;
+    left.columns[0].length = 2;
 
-
-        left.columns[1].length = 2;
-
+    left.columns[1].length = 2;
 
     left.row_count = 2;
 
@@ -524,11 +506,9 @@ test "innerJoin handles duplicate keys in right table" {
     right_ids[2] = 2;
     right_bonuses[2] = 10.0;
 
-        right.columns[0].length = 3;
+    right.columns[0].length = 3;
 
-
-        right.columns[1].length = 3;
-
+    right.columns[1].length = 3;
 
     right.row_count = 3;
 
@@ -578,11 +558,9 @@ test "innerJoin handles Bool columns correctly" {
     left_ids[1] = 2;
     left_active[1] = false;
 
-        left.columns[0].length = 2;
+    left.columns[0].length = 2;
 
-
-        left.columns[1].length = 2;
-
+    left.columns[1].length = 2;
 
     left.row_count = 2;
 
@@ -601,11 +579,9 @@ test "innerJoin handles Bool columns correctly" {
     right_ids[0] = 1;
     right_verified[0] = true;
 
-        right.columns[0].length = 1;
+    right.columns[0].length = 1;
 
-
-        right.columns[1].length = 1;
-
+    right.columns[1].length = 1;
 
     right.row_count = 1;
 
@@ -644,11 +620,9 @@ test "innerJoin handles String columns correctly" {
     left_ids[1] = 2;
     try left.columns[1].appendString(allocator, "Bob");
 
-        left.columns[0].length = 2;
-
+    left.columns[0].length = 2;
 
     // left.columns[1].length = 2;
-
 
     left.row_count = 2;
 
@@ -666,11 +640,9 @@ test "innerJoin handles String columns correctly" {
     right_ids[0] = 1;
     try right.columns[1].appendString(allocator, "Seattle");
 
-        right.columns[0].length = 1;
-
+    right.columns[0].length = 1;
 
     // right.columns[1].length = 1;
-
 
     right.row_count = 1;
 
@@ -690,4 +662,179 @@ test "innerJoin handles String columns correctly" {
 
     try testing.expectEqualStrings("Alice", name);
     try testing.expectEqualStrings("Seattle", city);
+}
+
+// Test: Sequential join uses fast path (column-wise memcpy)
+// Tests the optimization added in Phase 1 of Milestone 0.4.0
+// See docs/join_optimization_recommendation.md for details
+test "innerJoin uses fast path for sequential left table" {
+    const allocator = testing.allocator;
+
+    // Create left DataFrame with 1000 sequential rows
+    const left_cols = [_]ColumnDesc{
+        ColumnDesc.init("id", .Int64, 0),
+        ColumnDesc.init("value", .Float64, 1),
+        ColumnDesc.init("active", .Bool, 2),
+    };
+
+    var left = try DataFrame.create(allocator, &left_cols, 1000);
+    defer left.deinit();
+
+    const left_ids = left.columns[0].asInt64Buffer() orelse unreachable;
+    const left_values = left.columns[1].asFloat64Buffer() orelse unreachable;
+    const left_active = left.columns[2].asBoolBuffer() orelse unreachable;
+
+    var i: u32 = 0;
+    while (i < 1000) : (i += 1) {
+        left_ids[i] = @intCast(i);
+        left_values[i] = @as(f64, @floatFromInt(i)) * 1.5;
+        left_active[i] = (i % 2) == 0;
+    }
+    try left.setRowCount(1000);
+
+    // Create right DataFrame with matching rows
+    const right_cols = [_]ColumnDesc{
+        ColumnDesc.init("id", .Int64, 0),
+        ColumnDesc.init("info", .Int64, 1),
+    };
+
+    var right = try DataFrame.create(allocator, &right_cols, 1000);
+    defer right.deinit();
+
+    const right_ids = right.columns[0].asInt64Buffer() orelse unreachable;
+    const right_info = right.columns[1].asInt64Buffer() orelse unreachable;
+
+    i = 0;
+    while (i < 1000) : (i += 1) {
+        right_ids[i] = @intCast(i);
+        right_info[i] = @intCast(i * 2);
+    }
+    try right.setRowCount(1000);
+
+    // Perform join (should use fast path for left columns)
+    const join_cols = [_][]const u8{"id"};
+    var result = try join_mod.innerJoin(&left, &right, allocator, &join_cols);
+    defer result.deinit();
+
+    // Verify result structure
+    try testing.expectEqual(@as(u32, 1000), result.row_count); // Post-condition #1
+    try testing.expectEqual(@as(usize, 5), result.columns.len); // Post-condition #2
+
+    // Verify data integrity (spot checks)
+    // Left columns should be copied via fast path (memcpy)
+    const result_ids = result.columns[0].asInt64Buffer() orelse unreachable;
+    const result_values = result.columns[1].asFloat64Buffer() orelse unreachable;
+    const result_active = result.columns[2].asBoolBuffer() orelse unreachable;
+    const result_info = result.columns[4].asInt64Buffer() orelse unreachable;
+
+    // Check first row
+    try testing.expectEqual(@as(i64, 0), result_ids[0]);
+    try testing.expectEqual(@as(f64, 0.0), result_values[0]);
+    try testing.expectEqual(true, result_active[0]);
+    try testing.expectEqual(@as(i64, 0), result_info[0]);
+
+    // Check middle row
+    try testing.expectEqual(@as(i64, 500), result_ids[500]);
+    try testing.expectEqual(@as(f64, 750.0), result_values[500]);
+    try testing.expectEqual(true, result_active[500]);
+    try testing.expectEqual(@as(i64, 1000), result_info[500]);
+
+    // Check last row
+    try testing.expectEqual(@as(i64, 999), result_ids[999]);
+    try testing.expectEqual(@as(f64, 1498.5), result_values[999]);
+    try testing.expectEqual(false, result_active[999]);
+    try testing.expectEqual(@as(i64, 1998), result_info[999]);
+
+    // Verify all rows are sequential (validates fast path was used)
+    i = 0;
+    while (i < 1000) : (i += 1) {
+        try testing.expectEqual(@as(i64, @intCast(i)), result_ids[i]);
+    }
+}
+
+// Test: Non-sequential join uses fallback path
+test "innerJoin uses fallback for non-sequential matches" {
+    const allocator = testing.allocator;
+
+    // Create left DataFrame
+    const left_cols = [_]ColumnDesc{
+        ColumnDesc.init("key", .Int64, 0),
+        ColumnDesc.init("left_val", .Int64, 1),
+    };
+
+    var left = try DataFrame.create(allocator, &left_cols, 5);
+    defer left.deinit();
+
+    const left_keys = left.columns[0].asInt64Buffer() orelse unreachable;
+    const left_vals = left.columns[1].asInt64Buffer() orelse unreachable;
+
+    // Sequential keys
+    left_keys[0] = 10;
+    left_vals[0] = 100;
+    left_keys[1] = 20;
+    left_vals[1] = 200;
+    left_keys[2] = 30;
+    left_vals[2] = 300;
+    left_keys[3] = 40;
+    left_vals[3] = 400;
+    left_keys[4] = 50;
+    left_vals[4] = 500;
+    try left.setRowCount(5);
+
+    // Create right DataFrame with NON-SEQUENTIAL matches
+    const right_cols = [_]ColumnDesc{
+        ColumnDesc.init("key", .Int64, 0),
+        ColumnDesc.init("right_val", .Int64, 1),
+    };
+
+    var right = try DataFrame.create(allocator, &right_cols, 5);
+    defer right.deinit();
+
+    const right_keys = right.columns[0].asInt64Buffer() orelse unreachable;
+    const right_vals = right.columns[1].asInt64Buffer() orelse unreachable;
+
+    // Non-sequential keys (scrambled order)
+    right_keys[0] = 50; // Matches left[4]
+    right_vals[0] = 5000;
+    right_keys[1] = 10; // Matches left[0]
+    right_vals[1] = 1000;
+    right_keys[2] = 30; // Matches left[2]
+    right_vals[2] = 3000;
+    right_keys[3] = 40; // Matches left[3]
+    right_vals[3] = 4000;
+    right_keys[4] = 20; // Matches left[1]
+    right_vals[4] = 2000;
+    try right.setRowCount(5);
+
+    // Perform join (should use fallback path for right columns)
+    const join_cols = [_][]const u8{"key"};
+    var result = try join_mod.innerJoin(&left, &right, allocator, &join_cols);
+    defer result.deinit();
+
+    // Verify correct matching (data integrity)
+    try testing.expectEqual(@as(u32, 5), result.row_count);
+
+    const result_left_vals = result.columns[1].asInt64Buffer() orelse unreachable;
+    const result_right_vals = result.columns[3].asInt64Buffer() orelse unreachable;
+
+    // Results should be sorted by left table order
+    // left[0] (key=10) matches right[1]
+    try testing.expectEqual(@as(i64, 100), result_left_vals[0]);
+    try testing.expectEqual(@as(i64, 1000), result_right_vals[0]);
+
+    // left[1] (key=20) matches right[4]
+    try testing.expectEqual(@as(i64, 200), result_left_vals[1]);
+    try testing.expectEqual(@as(i64, 2000), result_right_vals[1]);
+
+    // left[2] (key=30) matches right[2]
+    try testing.expectEqual(@as(i64, 300), result_left_vals[2]);
+    try testing.expectEqual(@as(i64, 3000), result_right_vals[2]);
+
+    // left[3] (key=40) matches right[3]
+    try testing.expectEqual(@as(i64, 400), result_left_vals[3]);
+    try testing.expectEqual(@as(i64, 4000), result_right_vals[3]);
+
+    // left[4] (key=50) matches right[0]
+    try testing.expectEqual(@as(i64, 500), result_left_vals[4]);
+    try testing.expectEqual(@as(i64, 5000), result_right_vals[4]);
 }

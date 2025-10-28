@@ -117,6 +117,20 @@ pub fn unique(
             }
             std.debug.assert(i == df.row_count); // Post-condition
         },
+        .Categorical => {
+            // Categorical behaves like String for unique values
+            const cat_col = col.asCategoricalColumn() orelse return error.TypeMismatch;
+            var i: u32 = 0;
+            while (i < MAX_ROWS and i < df.row_count) : (i += 1) {
+                const value = cat_col.get(i);
+                if (!seen.contains(value)) {
+                    const key = try allocator.dupe(u8, value);
+                    try seen.put(key, {});
+                    try result.append(allocator, try allocator.dupe(u8, value));
+                }
+            }
+            std.debug.assert(i == df.row_count); // Post-condition
+        },
         .Bool => {
             const data = col.asBool() orelse return error.TypeMismatch;
             var has_true = false;
@@ -222,6 +236,10 @@ pub fn dropDuplicates(
                     const string_col = col.asStringColumn() orelse unreachable;
                     try key_buf.writer(allocator).print("{s}|", .{string_col.get(row_idx)});
                 },
+                .Categorical => {
+                    const cat_col = col.asCategoricalColumn() orelse unreachable;
+                    try key_buf.writer(allocator).print("{s}|", .{cat_col.get(row_idx)});
+                },
                 .Bool => {
                     const data = switch (col.data) {
                         .Bool => |slice| slice[0..df.row_count],
@@ -288,6 +306,12 @@ pub fn dropDuplicates(
                 for (keep_indices.items, 0..) |src_idx, dst_idx| {
                     dst_data[dst_idx] = src_data[src_idx];
                 }
+            },
+            .Categorical => {
+                // Categorical: shared dictionary, similar limitation as filter
+                // TODO(0.4.0): Implement proper categorical deduplication
+                // For now, just shallow copy the pointer
+                dst_col.data = src_col.data;
             },
             .Null => {},
         }
@@ -363,6 +387,10 @@ pub fn rename(
                 }
                 std.debug.assert(row_idx == df.row_count); // Loop verification
             },
+            .Categorical => {
+                // Shallow copy categorical pointer
+                dst_col.data = src_col.data;
+            },
             .Bool => {
                 const src_data = src_col.asBool() orelse unreachable;
                 const dst_data = dst_col.asBoolBuffer() orelse unreachable;
@@ -428,6 +456,10 @@ pub fn head(
                     try dst_col.appendString(result.arena.allocator(), str);
                 }
                 std.debug.assert(i == actual_n); // Post-condition
+            },
+            .Categorical => {
+                // Shallow copy categorical pointer
+                dst_col.data = src_col.data;
             },
             .Bool => {
                 const src_data = src_col.asBool() orelse unreachable;
@@ -496,6 +528,10 @@ pub fn tail(
                     try dst_col.appendString(result.arena.allocator(), str);
                 }
                 std.debug.assert(i == actual_n); // Post-condition
+            },
+            .Categorical => {
+                // Shallow copy categorical pointer
+                dst_col.data = src_col.data;
             },
             .Bool => {
                 const src_data = src_col.asBool() orelse unreachable;
@@ -582,7 +618,7 @@ pub fn describe(
                     try result.put(col.name, summary);
                 }
             },
-            .String, .Bool, .Null => {
+            .String, .Bool, .Categorical, .Null => {
                 // Non-numeric columns - only count
                 try result.put(col.name, Summary{
                     .count = df.row_count,

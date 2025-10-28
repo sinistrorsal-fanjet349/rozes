@@ -160,7 +160,8 @@ pub const CSVParser = struct {
         if (self.pos > 0 and
             self.pos == self.buffer.len and
             self.buffer[self.pos - 1] == self.opts.delimiter and
-            self.current_col_index > 0) {
+            self.current_col_index > 0)
+        {
             // We're at EOF after a delimiter, and we've already returned fields
             // Return empty field for trailing delimiter
             self.state = .EndOfRecord;
@@ -447,8 +448,68 @@ fn inferColumnType(rows: []const [][]const u8, col_idx: usize) !ValueType {
     if (all_int) return .Int64;
     if (all_float) return .Float64;
 
+    // Check if column should be categorical (low cardinality string data)
+    // This must come before defaulting to String
+    if (detectCategorical(rows, col_idx)) return .Categorical;
+
     // Default to String for mixed or non-numeric data
     return .String;
+}
+
+/// Detect if column should be categorical based on cardinality
+///
+/// Returns true if:
+/// - Column has string data (not numeric/bool)
+/// - Unique values / total values < 0.05 (5% threshold)
+/// - At least 10 rows for reliable detection
+///
+/// ## Assertions
+/// - rows.len > 0
+/// - rows.len <= 10_000 (preview limit)
+fn detectCategorical(rows: []const [][]const u8, col_idx: usize) bool {
+    std.debug.assert(rows.len > 0); // Pre-condition #1
+    std.debug.assert(rows.len <= 10_000); // Pre-condition #2
+
+    // Need at least 10 rows for reliable cardinality detection
+    if (rows.len < 10) return false;
+
+    // Count unique values using a temporary hash set
+    const allocator = std.heap.page_allocator; // Temporary for detection
+    var unique_values = std.StringHashMap(void).init(allocator);
+    defer unique_values.deinit();
+
+    var non_empty_count: u32 = 0;
+    var unique_count: u32 = 0;
+
+    for (rows) |row| {
+        if (col_idx >= row.len) continue;
+
+        const field = row[col_idx];
+        if (field.len == 0) continue; // Skip empty fields
+
+        non_empty_count += 1;
+
+        // Track unique values
+        const gop = unique_values.getOrPut(field) catch continue;
+        if (!gop.found_existing) {
+            unique_count += 1;
+        }
+    }
+
+    std.debug.assert(unique_count <= non_empty_count); // Post-condition #3
+
+    // No data or all empty → not categorical
+    if (non_empty_count == 0) return false;
+
+    // Calculate cardinality ratio
+    const cardinality = @as(f64, @floatFromInt(unique_count)) / @as(f64, @floatFromInt(non_empty_count));
+
+    // Categorical threshold: < 5% unique values
+    // Examples:
+    // - Region column with 3 unique values out of 1000 rows: 0.3% → Categorical
+    // - City column with 100 unique values out of 1000 rows: 10% → String
+    // - ID column with 1000 unique values out of 1000 rows: 100% → String
+    return cardinality < 0.05;
 }
 
 /// Try to parse as Int64
@@ -585,6 +646,23 @@ fn fillStringColumn(col: *Series, rows: []const [][]const u8, col_idx: usize, al
     std.debug.assert(row_idx == rows.len); // Post-condition #2
 }
 
+/// Fill Categorical column with data from CSV rows
+fn fillCategoricalColumn(col: *Series, rows: []const [][]const u8, col_idx: usize, allocator: std.mem.Allocator) !void {
+    std.debug.assert(col.value_type == .Categorical); // Pre-condition #1
+    std.debug.assert(rows.len > 0); // Pre-condition #2
+
+    var cat_col = col.asCategoricalColumnMut() orelse return error.TypeMismatch;
+
+    var row_idx: u32 = 0;
+    while (row_idx < MAX_ROWS and row_idx < rows.len) : (row_idx += 1) {
+        const row = rows[row_idx];
+        const field = if (col_idx < row.len) row[col_idx] else "";
+        try cat_col.append(allocator, field);
+    }
+
+    std.debug.assert(row_idx == rows.len); // Post-condition #3
+}
+
 /// Fill DataFrame with data from CSV rows
 fn fillDataFrame(df: *DataFrame, rows: []const [][]const u8, column_types: []ValueType) !void {
     std.debug.assert(rows.len > 0); // Pre-condition #1
@@ -596,6 +674,7 @@ fn fillDataFrame(df: *DataFrame, rows: []const [][]const u8, column_types: []Val
             .Float64 => try fillFloat64Column(col, rows, col_idx),
             .Bool => try fillBoolColumn(col, rows, col_idx),
             .String => try fillStringColumn(col, rows, col_idx, df.arena.allocator()),
+            .Categorical => try fillCategoricalColumn(col, rows, col_idx, df.arena.allocator()),
             else => return error.UnsupportedType,
         }
     }
@@ -1164,6 +1243,88 @@ test "boolean column parsing" {
 
     try testing.expectEqual(true, active_data[2]);
     try testing.expectEqual(false, verified_data[2]);
+}
+
+// Categorical Column Tests (0.4.0+)
+
+test "CSV parser auto-detects categorical column (low cardinality < 5%)" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    // Create CSV with 100 rows and 3 unique region values (3%)
+    var csv_builder = std.ArrayList(u8){};
+    defer csv_builder.deinit(allocator);
+
+    try csv_builder.appendSlice(allocator, "region,value\n");
+    var i: u32 = 0;
+    while (i < 100) : (i += 1) {
+        const region = if (i % 3 == 0) "East" else if (i % 3 == 1) "West" else "South";
+        try csv_builder.writer(allocator).print("{s},{}\n", .{ region, i });
+    }
+
+    var parser = try CSVParser.init(allocator, csv_builder.items, .{});
+    defer parser.deinit();
+
+    var df = try parser.toDataFrame();
+    defer df.deinit();
+
+    try testing.expectEqual(@as(u32, 100), df.row_count);
+
+    const region_col = df.column("region").?;
+    try testing.expectEqual(ValueType.Categorical, region_col.value_type);
+
+    // Verify categorical data
+    const cat_col = region_col.asCategoricalColumn().?;
+    try testing.expectEqual(@as(u32, 3), cat_col.categoryCount());
+
+    // Check first few values decode correctly
+    try testing.expectEqualStrings("East", cat_col.get(0));
+    try testing.expectEqualStrings("West", cat_col.get(1));
+    try testing.expectEqualStrings("South", cat_col.get(2));
+}
+
+test "CSV parser detects string column (high cardinality > 5%)" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    // Create CSV with 100 rows and 50 unique ID values (50%)
+    var csv_builder = std.ArrayList(u8){};
+    defer csv_builder.deinit(allocator);
+
+    try csv_builder.appendSlice(allocator, "id,value\n");
+    var i: u32 = 0;
+    while (i < 100) : (i += 1) {
+        // Create 50 unique IDs (each ID appears twice)
+        const id_num = i / 2;
+        try csv_builder.writer(allocator).print("id{},{}\n", .{ id_num, i });
+    }
+
+    var parser = try CSVParser.init(allocator, csv_builder.items, .{});
+    defer parser.deinit();
+
+    var df = try parser.toDataFrame();
+    defer df.deinit();
+
+    const id_col = df.column("id").?;
+    try testing.expectEqual(ValueType.String, id_col.value_type); // 50% > 5% threshold
+}
+
+test "detectCategorical returns false for < 10 rows" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    // CSV with only 5 rows (below minimum threshold)
+    const csv = "region\nEast\nEast\nWest\nEast\nSouth\n";
+
+    var parser = try CSVParser.init(allocator, csv, .{});
+    defer parser.deinit();
+
+    var df = try parser.toDataFrame();
+    defer df.deinit();
+
+    const region_col = df.column("region").?;
+    // Should default to String (not enough rows for reliable detection)
+    try testing.expectEqual(ValueType.String, region_col.value_type);
 }
 
 test "mixed column types with boolean" {

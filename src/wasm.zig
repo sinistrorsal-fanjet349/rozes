@@ -479,10 +479,12 @@ fn parseCSVOptionsJSON(json: []const u8) !CSVOptions {
     // Check for "has_headers":true or "has_headers":false
     if (std.mem.indexOf(u8, json, "\"has_headers\"") != null) {
         if (std.mem.indexOf(u8, json, "\"has_headers\":true") != null or
-            std.mem.indexOf(u8, json, "\"has_headers\": true") != null) {
+            std.mem.indexOf(u8, json, "\"has_headers\": true") != null)
+        {
             opts.has_headers = true;
         } else if (std.mem.indexOf(u8, json, "\"has_headers\":false") != null or
-                   std.mem.indexOf(u8, json, "\"has_headers\": false") != null) {
+            std.mem.indexOf(u8, json, "\"has_headers\": false") != null)
+        {
             opts.has_headers = false;
         }
     }
@@ -490,10 +492,12 @@ fn parseCSVOptionsJSON(json: []const u8) !CSVOptions {
     // Check for "skip_blank_lines":true or "skip_blank_lines":false
     if (std.mem.indexOf(u8, json, "\"skip_blank_lines\"") != null) {
         if (std.mem.indexOf(u8, json, "\"skip_blank_lines\":true") != null or
-            std.mem.indexOf(u8, json, "\"skip_blank_lines\": true") != null) {
+            std.mem.indexOf(u8, json, "\"skip_blank_lines\": true") != null)
+        {
             opts.skip_blank_lines = true;
         } else if (std.mem.indexOf(u8, json, "\"skip_blank_lines\":false") != null or
-                   std.mem.indexOf(u8, json, "\"skip_blank_lines\": false") != null) {
+            std.mem.indexOf(u8, json, "\"skip_blank_lines\": false") != null)
+        {
             opts.skip_blank_lines = false;
         }
     }
@@ -501,10 +505,12 @@ fn parseCSVOptionsJSON(json: []const u8) !CSVOptions {
     // Check for "trim_whitespace":true or "trim_whitespace":false
     if (std.mem.indexOf(u8, json, "\"trim_whitespace\"") != null) {
         if (std.mem.indexOf(u8, json, "\"trim_whitespace\":true") != null or
-            std.mem.indexOf(u8, json, "\"trim_whitespace\": true") != null) {
+            std.mem.indexOf(u8, json, "\"trim_whitespace\": true") != null)
+        {
             opts.trim_whitespace = true;
         } else if (std.mem.indexOf(u8, json, "\"trim_whitespace\":false") != null or
-                   std.mem.indexOf(u8, json, "\"trim_whitespace\": false") != null) {
+            std.mem.indexOf(u8, json, "\"trim_whitespace\": false") != null)
+        {
             opts.trim_whitespace = false;
         }
     }
@@ -512,13 +518,16 @@ fn parseCSVOptionsJSON(json: []const u8) !CSVOptions {
     // Check for "delimiter":"," or "delimiter":"\t"
     if (std.mem.indexOf(u8, json, "\"delimiter\"") != null) {
         if (std.mem.indexOf(u8, json, "\"delimiter\":\",\"") != null or
-            std.mem.indexOf(u8, json, "\"delimiter\": \",\"") != null) {
+            std.mem.indexOf(u8, json, "\"delimiter\": \",\"") != null)
+        {
             opts.delimiter = ',';
         } else if (std.mem.indexOf(u8, json, "\"delimiter\":\"\\t\"") != null or
-                   std.mem.indexOf(u8, json, "\"delimiter\": \"\\t\"") != null) {
+            std.mem.indexOf(u8, json, "\"delimiter\": \"\\t\"") != null)
+        {
             opts.delimiter = '\t';
         } else if (std.mem.indexOf(u8, json, "\"delimiter\":\";\"") != null or
-                   std.mem.indexOf(u8, json, "\"delimiter\": \";\"") != null) {
+            std.mem.indexOf(u8, json, "\"delimiter\": \";\"") != null)
+        {
             opts.delimiter = ';';
         }
     }

@@ -168,6 +168,12 @@ fn writeValue(
             const str = str_col.get(row_idx);
             try writeField(writer, str, opts);
         },
+        .Categorical => {
+            // Export categorical as string (decode to original value)
+            const cat_col = col.asCategoricalColumn() orelse return error.TypeMismatch;
+            const str = cat_col.get(row_idx);
+            try writeField(writer, str, opts);
+        },
         .Null => {
             // Empty field for null
             try writer.writeAll("");

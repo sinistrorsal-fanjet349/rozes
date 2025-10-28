@@ -1,7 +1,7 @@
 # Rozes - High-Performance DataFrame Library for the Web
 
 **Project**: Rozes - A high-performance DataFrame library with CSV focus
-**Language**: Zig (0.12+)
+**Language**: Zig (0.15+)
 **Targets**: Browser (WebAssembly), Node.js (native addon or Wasm)
 **Status**: Initial Development Phase
 
@@ -46,21 +46,27 @@ Rozes is a DataFrame library written in Zig that provides:
 ## Quick Reference
 
 ### For Implementation
+
 👉 See **[src/CLAUDE.md](./src/CLAUDE.md)** for:
+
 - Source code organization
 - Zig implementation patterns
 - Common code patterns
 - Memory management strategies
 
 ### For Testing
+
 👉 This document covers:
+
 - Test organization and location
 - Test patterns and templates
 - Conformance test suites
 - Browser testing
 
 ### For Development
+
 👉 See **[docs/TODO.md](./docs/TODO.md)** for:
+
 - Current milestone tasks
 - Phase breakdown
 - Acceptance criteria
@@ -165,6 +171,7 @@ rozes/
 #### Unit Tests (`src/test/unit/`)
 
 **Location**: Mirror source structure
+
 ```
 src/test/unit/
 ├── core/
@@ -181,10 +188,12 @@ src/test/unit/
 ```
 
 **Naming Convention**:
+
 - Source file: `src/core/series.zig`
 - Test file: `src/test/unit/core/series_test.zig`
 
 **Import Pattern**:
+
 ```zig
 // src/test/unit/core/series_test.zig
 const std = @import("std");
@@ -199,6 +208,7 @@ test "Series.len returns correct length" {
 #### Integration Tests (`src/test/integration/`)
 
 **Purpose**: Test multiple modules working together
+
 ```
 src/test/integration/
 ├── csv_to_dataframe_test.zig   # CSV → DataFrame flow
@@ -207,6 +217,7 @@ src/test/integration/
 ```
 
 **Example**:
+
 ```zig
 // src/test/integration/csv_to_dataframe_test.zig
 test "CSV parse → filter → export round-trip" {
@@ -235,6 +246,7 @@ test "CSV parse → filter → export round-trip" {
 **Interactive Test Runner**: `src/test/browser/index.html`
 
 **Features**:
+
 - 17 custom tests (10 RFC 4180 + 7 edge cases)
 - Real-time execution with progress bar
 - Performance benchmarks (1K, 10K, 100K rows)
@@ -242,28 +254,30 @@ test "CSV parse → filter → export round-trip" {
 - Console output with color-coded logging
 
 **Test Suite**: `src/test/browser/tests.js`
+
 ```javascript
 // Example test definition
 const testSuites = {
-    rfc4180: {
-        name: 'RFC 4180 Compliance',
-        tests: [
-            {
-                file: 'rfc4180/01_simple.csv',
-                name: 'Simple CSV with headers',
-                expected: {
-                    rowCount: 3,
-                    columnCount: 3,
-                    columns: ['name', 'age', 'city']
-                }
-            },
-            // ... more tests
-        ]
-    }
+  rfc4180: {
+    name: "RFC 4180 Compliance",
+    tests: [
+      {
+        file: "rfc4180/01_simple.csv",
+        name: "Simple CSV with headers",
+        expected: {
+          rowCount: 3,
+          columnCount: 3,
+          columns: ["name", "age", "city"],
+        },
+      },
+      // ... more tests
+    ],
+  },
 };
 ```
 
 **Running Browser Tests**:
+
 ```bash
 # Build WASM
 zig build -Dtarget=wasm32-freestanding
@@ -278,6 +292,7 @@ open http://localhost:8080/src/test/browser/
 #### Benchmark Tests (`src/test/benchmark/`)
 
 **CSV Parsing Benchmarks**:
+
 ```zig
 // src/test/benchmark/csv_parse.zig
 const std = @import("std");
@@ -302,6 +317,7 @@ pub fn benchmarkCSVParse(allocator: std.mem.Allocator) !void {
 ```
 
 **DataFrame Operations Benchmarks**:
+
 ```zig
 // src/test/benchmark/operations.zig
 pub fn benchmarkFilter(allocator: std.mem.Allocator) !void {
@@ -481,6 +497,7 @@ Located in `testdata/csv/edge_cases/`:
 ### External Test Suites (Downloaded)
 
 #### csv-spectrum (15 tests)
+
 - **Source**: https://github.com/maxogden/csv-spectrum
 - **License**: MIT
 - **Location**: `testdata/external/csv-spectrum/`
@@ -488,6 +505,7 @@ Located in `testdata/csv/edge_cases/`:
 - **Coverage**: Empty fields, quotes, newlines, UTF-8, JSON in CSV
 
 #### Papa Parse (100+ tests)
+
 - **Source**: https://github.com/mholt/PapaParse
 - **License**: MIT
 - **Location**: `testdata/external/PapaParse/tests/`
@@ -495,6 +513,7 @@ Located in `testdata/csv/edge_cases/`:
 - **Coverage**: Streaming, encoding, type detection, error handling
 
 #### uniVocity (50+ tests)
+
 - **Source**: https://github.com/uniVocity/csv-parsers-comparison
 - **License**: Apache 2.0
 - **Location**: `testdata/external/csv-parsers-comparison/src/main/resources/`
@@ -504,6 +523,7 @@ Located in `testdata/csv/edge_cases/`:
 **Total**: **182+ test cases** available
 
 **Quick Download** (already run):
+
 ```bash
 ./scripts/download_conformance_tests.sh
 ```
@@ -517,6 +537,7 @@ Located in `testdata/csv/edge_cases/`:
 **Location**: `src/test/browser/index.html`
 
 **Features**:
+
 - 17 custom tests (10 RFC 4180 + 7 edge cases)
 - Real-time execution with progress bar
 - Performance benchmarks (1K, 10K, 100K rows)
@@ -541,32 +562,35 @@ open http://localhost:8080/test/browser/
 
 ### Browser Compatibility Matrix
 
-| Browser | Version | Status | Notes |
-|---------|---------|--------|-------|
-| Chrome | 90+ | ✅ Tier 1 | Full WebAssembly support |
-| Firefox | 88+ | ✅ Tier 1 | Full WebAssembly support |
-| Safari | 14+ | ✅ Tier 1 | Full WebAssembly support |
-| Edge | 90+ | ✅ Tier 1 | Chromium-based |
-| Chrome Android | 90+ | ⚠️ Tier 2 | Manual testing |
-| Safari iOS | 14+ | ⚠️ Tier 2 | Manual testing |
-| IE 11 | N/A | ❌ Not Supported | No WebAssembly |
+| Browser        | Version | Status           | Notes                    |
+| -------------- | ------- | ---------------- | ------------------------ |
+| Chrome         | 90+     | ✅ Tier 1        | Full WebAssembly support |
+| Firefox        | 88+     | ✅ Tier 1        | Full WebAssembly support |
+| Safari         | 14+     | ✅ Tier 1        | Full WebAssembly support |
+| Edge           | 90+     | ✅ Tier 1        | Chromium-based           |
+| Chrome Android | 90+     | ⚠️ Tier 2        | Manual testing           |
+| Safari iOS     | 14+     | ⚠️ Tier 2        | Manual testing           |
+| IE 11          | N/A     | ❌ Not Supported | No WebAssembly           |
 
 ---
 
 ## Conformance Success Criteria
 
 ### RFC 4180 Compliance
+
 - ✅ 100% pass rate on custom RFC 4180 tests (10/10 or 7/10 for MVP)
 - ✅ 100% pass rate on custom edge cases (7/7)
 - ✅ 100% pass rate on csv-spectrum (15/15)
 
 ### Performance
+
 - ✅ Parse 100K rows in <1 second (browser)
 - ✅ Parse 1M rows in <3 seconds (browser)
 - ✅ Peak memory <2× CSV size (numeric data)
 - ✅ No memory leaks (1000 parse/free cycles)
 
 ### Cross-Browser
+
 - ✅ Pass all tests on Chrome 90+, Firefox 88+, Safari 14+, Edge 90+
 - ✅ No crashes or hangs on large datasets
 - ✅ Consistent results across browsers
@@ -724,7 +748,9 @@ const csv = @embedFile("../../../testdata/csv/rfc4180/01_simple.csv");
 
 **Last Updated**: 2025-10-27
 **Next Review**: When Milestone 0.1.0 is complete (see docs/TODO.md)
+
 - all new docs should be written in /docs
 - dont update RFC.md
 - all document creation should be in docs/
 - whenever a todo is done, update @docs/TODO.md
+- add a src/profiling_tools and keep the tools there
