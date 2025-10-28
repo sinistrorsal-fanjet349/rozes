@@ -50,7 +50,8 @@ pub const Series = struct {
         value_type: ValueType,
         capacity: u32,
     ) !Series {
-        std.debug.assert(name.len > 0); // Name required
+        // Allow empty names - valid edge case in CSV (e.g., ",b,c" header)
+        std.debug.assert(@intFromPtr(name.ptr) != 0); // Pointer must be valid
         std.debug.assert(capacity > 0); // Need some capacity
         std.debug.assert(capacity <= MAX_ROWS); // Within limits
 

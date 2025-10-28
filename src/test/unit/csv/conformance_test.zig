@@ -145,9 +145,34 @@ test "RFC 4180: 07_empty_fields.csv - null/empty values" {
     // Empty fields in string columns are represented as 0 for numeric types
 }
 
-test "RFC 4180: 08_no_header.csv - CSV without header row (DEFERRED to 0.2.0)" {
-    // This test requires special handling for no-header CSVs
-    // Deferred to 0.2.0 for now
+test "RFC 4180: 08_no_header.csv - CSV without header row" {
+    const allocator = testing.allocator;
+    const csv = @embedFile("../../../../testdata/csv/rfc4180/08_no_header.csv");
+
+    // Parse with has_headers=false to generate col0, col1, col2, col3
+    var parser = try CSVParser.init(allocator, csv, .{ .has_headers = false });
+    defer parser.deinit();
+
+    var df = try parser.toDataFrame();
+    defer df.deinit();
+
+    // Should have 3 rows, 4 columns (auto-generated: col0, col1, col2, col3)
+    try testing.expectEqual(@as(u32, 3), df.len());
+    try testing.expectEqual(@as(u32, 4), df.columnCount());
+
+    // Check auto-generated column names
+    try testing.expectEqualStrings("col0", df.columnNames()[0]);
+    try testing.expectEqualStrings("col1", df.columnNames()[1]);
+    try testing.expectEqualStrings("col2", df.columnNames()[2]);
+    try testing.expectEqualStrings("col3", df.columnNames()[3]);
+
+    // Verify first row data
+    const col0 = df.column("col0").?;
+    try testing.expectEqual(@as(i64, 1), col0.asInt64Buffer().?[0]);
+
+    const col1_col = df.column("col1").?;
+    const col1_str = col1_col.asStringColumn().?;
+    try testing.expectEqualStrings("Alice", col1_str.get(0));
 }
 
 test "RFC 4180: 09_trailing_comma.csv - trailing comma creates empty column" {

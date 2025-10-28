@@ -133,8 +133,22 @@ pub const CSVParser = struct {
             }
         }
 
-        // End of buffer
+        // End of buffer - handle final field
         if (self.current_field.items.len > 0) {
+            self.state = .EndOfRecord;
+            return try self.finishField();
+        }
+
+        // Special case: if we're at EOF and the last character was a delimiter,
+        // we need to return one more empty field (trailing delimiter case)
+        // Check: "," or "a,b," should return trailing empty field
+        // We check current_col_index > 0 to ensure we've already returned at least one field
+        if (self.pos > 0 and
+            self.pos == self.buffer.len and
+            self.buffer[self.pos - 1] == self.opts.delimiter and
+            self.current_col_index > 0) {
+            // We're at EOF after a delimiter, and we've already returned fields
+            // Return empty field for trailing delimiter
             self.state = .EndOfRecord;
             return try self.finishField();
         }
@@ -221,7 +235,18 @@ pub const CSVParser = struct {
             self.state = .EndOfRecord;
             return .FieldComplete; // Return field, then nextField() will return null for end of row
         } else {
-            return error.InvalidQuoting;
+            // Invalid trailing quote (e.g., "field"x or "field", without proper closing)
+            if (self.opts.parse_mode == .Lenient) {
+                // Lenient mode: treat as literal and continue
+                // Append the quote and the invalid character
+                try self.current_field.append(allocator, '"');
+                try self.current_field.append(allocator, char);
+                self.state = .InField; // Continue as unquoted field
+                return .Continue;
+            } else {
+                // Strict mode: throw error
+                return error.InvalidQuoting;
+            }
         }
     }
 
@@ -289,7 +314,7 @@ pub const CSVParser = struct {
             // Skip blank lines if option is set
             // Note: No need to free - arena will handle it
             if (self.opts.skip_blank_lines and row.len == 1 and row[0].len == 0) {
-                row_count -= 1; // Don't count blank lines
+                if (row_count > 0) row_count -= 1; // Don't count blank lines (avoid underflow)
                 continue;
             }
 
@@ -306,7 +331,10 @@ pub const CSVParser = struct {
             try self.parseAll();
         }
 
+        // Handle completely empty CSVs
         if (self.rows.items.len == 0) {
+            // In Lenient mode, allow empty CSVs but they must have at least been parsed
+            // If there's literally nothing (not even headers), it's an error
             return error.EmptyCSV;
         }
 
@@ -1155,7 +1183,8 @@ test "empty boolean fields default to false" {
     const testing = std.testing;
     const allocator = testing.allocator;
 
-    const csv = "active\ntrue\n\nfalse\n";
+    // CSV with empty boolean field (column "active" has empty value in row 2)
+    const csv = "name,active\nAlice,true\nBob,\nCharlie,false\n";
 
     var parser = try CSVParser.init(allocator, csv, .{});
     defer parser.deinit();
@@ -1166,7 +1195,7 @@ test "empty boolean fields default to false" {
     const col = df.column("active").?;
     const data = col.asBool().?;
 
-    try testing.expectEqual(true, data[0]);
-    try testing.expectEqual(false, data[1]); // Empty field defaults to false
-    try testing.expectEqual(false, data[2]);
+    try testing.expectEqual(true, data[0]); // Alice: true
+    try testing.expectEqual(false, data[1]); // Bob: empty → defaults to false
+    try testing.expectEqual(false, data[2]); // Charlie: false
 }

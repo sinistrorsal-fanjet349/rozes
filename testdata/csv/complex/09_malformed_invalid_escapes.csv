@@ -1,0 +1,6 @@
+id,text,notes
+1,"Normal text","Standard entry"
+2,"Text with single "" quote","Invalid escape"
+3,"Multiple """ quotes ""","Also invalid"
+4,"""Starts with triple quote","Malformed"
+5,"Ends with triple quote""","Bad format"

@@ -40,6 +40,7 @@ pub fn build(b: *std.Build) void {
     });
 
     const run_conformance = b.addRunArtifact(conformance);
+    run_conformance.setCwd(b.path(".")); // Run from project root to access testdata/
     const conformance_step = b.step("conformance", "Run RFC 4180 conformance tests from testdata/");
     conformance_step.dependOn(&run_conformance.step);
 

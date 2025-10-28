@@ -1,0 +1,4 @@
+customer,address,notes,status
+"John ""Big J"" Smith","123 Main St, Apt 4B, Springfield, IL, 62701","Customer prefers morning deliveries, ring doorbell twice, leave package with neighbor if not home, special instructions: ""Do not leave in rain, use side door if available, contact via email first""",active
+"Mary O'Brien","456 Oak Ave, Suite 200, Boston, MA, 02108","Corporate account, requires signature, invoice separately, tax-exempt, contact: finance@company.com, phone: (555) 123-4567, notes: ""rush orders only, payment terms NET-30, approved vendors list on file""",premium
+"Tech Solutions, LLC","789 Tech Park Dr, Building C, San Jose, CA, 95110","Multiple delivery locations: main office, warehouse A, warehouse B, datacenter, use different PO numbers for each location, urgent requests go to: emergency@techsolutions.com, after-hours contact: (555) 999-8888, billing address differs from shipping",enterprise

@@ -647,9 +647,9 @@ Optimization order:
 
 ---
 
-## Tiger Style Learnings from String Column Implementation
+## Tiger Style Learnings from 0.2.0 & 0.3.0 Implementation
 
-> **🎯 NEW (2025-10-27)**: Critical learnings from implementing string column support in Milestone 0.2.0. These patterns prevent common Tiger Style violations.
+> **🎯 UPDATED (2025-10-28)**: Critical learnings from implementing string column support (0.2.0) and sort operations (0.3.0). These patterns prevent common Tiger Style violations.
 
 ### Learning #1: Buffer Growth Loops MUST Be Bounded 🔥
 
@@ -1182,6 +1182,229 @@ abc
    - **Why uncovered**: Comptime code not measured by runtime coverage
 
 **RULE**: 85% coverage is excellent for MVP. Document known gaps. Add stress tests in 0.3.0.
+
+---
+
+### Learning #9: IEEE 754 NaN Handling - The Silent Killer 🔥
+
+**THE DISCOVERY**:
+From 0.3.0 sort implementation (2025-10-28):
+- **Test Failure**: `sort handles NaN in Float64 column` - panics with "unreachable code"
+- **Root Cause**: `std.math.order(a, b)` crashes when either `a` or `b` is NaN
+- **Impact**: 112/113 tests passing → **CRITICAL BLOCKER** for production
+
+**THE PROBLEM**:
+```zig
+// ❌ CRITICAL BUG - Panics on NaN values
+.Float64 => blk: {
+    const data = col.asFloat64Buffer() orelse unreachable;
+    const a = data[idx_a];
+    const b = data[idx_b];
+    break :blk std.math.order(a, b);  // ❌ PANICS if a or b is NaN
+},
+```
+
+**WHY IT MATTERS**:
+1. **Real-World Data**: NaN values are common in data science:
+   - Missing data (failed sensor readings, null values)
+   - Computation errors (0/0, √-1, log(-1))
+   - Infinity arithmetic (∞ - ∞, ∞/∞)
+   - Data import errors (Excel, CSV parsing)
+
+2. **Production Impact**:
+   - Sorting a 1M-row DataFrame with **one NaN** crashes the entire application
+   - Users don't expect sort to fail on "valid" float values
+   - Silent data filtering (removing NaNs) leads to incorrect analysis
+
+3. **IEEE 754 Semantics**:
+   - NaN is **unordered**: `NaN < x`, `NaN > x`, `NaN == x` are ALL false
+   - `std.math.order()` assumes total ordering → panics on NaN
+   - Standard library doesn't handle NaN in comparison functions
+
+**REAL-WORLD SCENARIO**:
+```csv
+sensor_id,temperature,humidity
+1,23.5,65.2
+2,NaN,58.1        ← Sensor 2 malfunction
+3,25.1,62.8
+4,24.0,NaN        ← Humidity sensor offline
+5,22.8,60.5
+```
+
+**Before Fix**: `df.sort("temperature")` → **CRASH** (unreachable code)
+**After Fix**: `df.sort("temperature")` → NaN rows sorted to end, stable order preserved
+
+**THE CORRECT PATTERN**:
+```zig
+// ✅ CORRECT - IEEE 754 compliant NaN handling
+.Float64 => blk: {
+    const data = col.asFloat64Buffer() orelse unreachable;
+    const a = data[idx_a];
+    const b = data[idx_b];
+
+    // Check for NaN first (NaN sorts to end)
+    const a_is_nan = std.math.isNan(a);
+    const b_is_nan = std.math.isNan(b);
+
+    if (a_is_nan and b_is_nan) {
+        // Both NaN: preserve original order (stable sort guarantee)
+        break :blk std.math.order(idx_a, idx_b);
+    } else if (a_is_nan) {
+        // a is NaN, b is not: a > b (NaN sorts to end)
+        break :blk .gt;
+    } else if (b_is_nan) {
+        // b is NaN, a is not: a < b (NaN sorts to end)
+        break :blk .lt;
+    } else {
+        // Neither is NaN: normal comparison
+        break :blk std.math.order(a, b);
+    }
+},
+```
+
+**COMPLETE IEEE 754 EDGE CASES**:
+```zig
+test "sort handles all IEEE 754 special values" {
+    const allocator = testing.allocator;
+
+    const cols = [_]ColumnDesc{
+        ColumnDesc.init("value", .Float64, 0),
+    };
+
+    var df = try DataFrame.create(allocator, &cols, 9);
+    defer df.deinit();
+
+    const values = df.columns[0].asFloat64Buffer() orelse unreachable;
+    // Test data: [42.0, NaN, -Inf, 10.0, +Inf, -0.0, 0.0, NaN, 95.0]
+    values[0] = 42.0;
+    values[1] = std.math.nan(f64);   // NaN #1
+    values[2] = -std.math.inf(f64);  // -Infinity
+    values[3] = 10.0;
+    values[4] = std.math.inf(f64);   // +Infinity
+    values[5] = -0.0;                // Negative zero
+    values[6] = 0.0;                 // Positive zero
+    values[7] = std.math.nan(f64);   // NaN #2
+    values[8] = 95.0;
+    df.row_count = 9;
+
+    var sorted = try sort_mod.sort(&df, allocator, "value", .Ascending);
+    defer sorted.deinit();
+
+    const sorted_values = sorted.columns[0].asFloat64Buffer() orelse unreachable;
+
+    // Expected order: [-Inf, -0.0, 0.0, 10.0, 42.0, 95.0, +Inf, NaN, NaN]
+    //                  (negative values first, then positives, then infinities, NaN last)
+
+    // Verify -Inf is first
+    try testing.expect(std.math.isInf(sorted_values[0]) and sorted_values[0] < 0);
+
+    // Verify zeros (note: -0.0 == 0.0 in comparison, order preserved by stable sort)
+    try testing.expectEqual(@as(f64, -0.0), sorted_values[1]); // or 0.0, both valid
+    try testing.expectEqual(@as(f64, 0.0), sorted_values[2]);  // or -0.0, both valid
+
+    // Verify finite values in order
+    try testing.expectEqual(@as(f64, 10.0), sorted_values[3]);
+    try testing.expectEqual(@as(f64, 42.0), sorted_values[4]);
+    try testing.expectEqual(@as(f64, 95.0), sorted_values[5]);
+
+    // Verify +Inf
+    try testing.expect(std.math.isInf(sorted_values[6]) and sorted_values[6] > 0);
+
+    // Verify NaN values at end (stable order preserved)
+    try testing.expect(std.math.isNan(sorted_values[7]));
+    try testing.expect(std.math.isNan(sorted_values[8]));
+}
+
+test "sort preserves original order of NaN values (stable sort)" {
+    const allocator = testing.allocator;
+
+    // Create DataFrame with multiple NaN values and IDs
+    const cols = [_]ColumnDesc{
+        ColumnDesc.init("id", .Int64, 0),
+        ColumnDesc.init("value", .Float64, 1),
+    };
+
+    var df = try DataFrame.create(allocator, &cols, 5);
+    defer df.deinit();
+
+    const ids = df.columns[0].asInt64Buffer() orelse unreachable;
+    const values = df.columns[1].asFloat64Buffer() orelse unreachable;
+
+    // Test data: NaN values with different IDs
+    ids[0] = 1; values[0] = std.math.nan(f64);
+    ids[1] = 2; values[1] = std.math.nan(f64);
+    ids[2] = 3; values[2] = 42.0;
+    ids[3] = 4; values[3] = std.math.nan(f64);
+    ids[4] = 5; values[4] = 10.0;
+    df.row_count = 5;
+
+    var sorted = try sort_mod.sort(&df, allocator, "value", .Ascending);
+    defer sorted.deinit();
+
+    const sorted_ids = sorted.columns[0].asInt64Buffer() orelse unreachable;
+    const sorted_values = sorted.columns[1].asFloat64Buffer() orelse unreachable;
+
+    // Expected: [10.0, 42.0, NaN(id=1), NaN(id=2), NaN(id=4)]
+    // Verify finite values first
+    try testing.expectEqual(@as(f64, 10.0), sorted_values[0]);
+    try testing.expectEqual(@as(i64, 5), sorted_ids[0]);
+
+    try testing.expectEqual(@as(f64, 42.0), sorted_values[1]);
+    try testing.expectEqual(@as(i64, 3), sorted_ids[1]);
+
+    // Verify NaN values in ORIGINAL ORDER (stable sort)
+    try testing.expect(std.math.isNan(sorted_values[2]));
+    try testing.expectEqual(@as(i64, 1), sorted_ids[2]); // First NaN
+
+    try testing.expect(std.math.isNan(sorted_values[3]));
+    try testing.expectEqual(@as(i64, 2), sorted_ids[3]); // Second NaN
+
+    try testing.expect(std.math.isNan(sorted_values[4]));
+    try testing.expectEqual(@as(i64, 4), sorted_ids[4]); // Third NaN
+}
+```
+
+**OTHER IEEE 754 GOTCHAS**:
+
+1. **Negative Zero**:
+```zig
+// ❌ WRONG - Treats -0.0 differently from 0.0
+if (value == 0.0) return .eq;  // Misses -0.0!
+
+// ✅ CORRECT - -0.0 == 0.0 (IEEE 754 semantics)
+if (value == 0.0) return .eq;  // Correctly handles both
+// Note: std.math.order() already handles -0.0 == 0.0
+```
+
+2. **Infinity Arithmetic**:
+```zig
+// ✅ HANDLED by std.math.order()
+const a = std.math.inf(f64);     // +Infinity
+const b = -std.math.inf(f64);    // -Infinity
+std.math.order(a, b) == .gt;     // +Inf > -Inf ✅
+std.math.order(a, 100.0) == .gt; // +Inf > finite ✅
+```
+
+3. **Denormal Numbers**:
+```zig
+// ✅ HANDLED by std.math.order()
+const tiny = 1e-310;  // Near smallest Float64
+std.math.order(tiny, 0.0) == .gt; // Works correctly ✅
+```
+
+**WHEN TO CHECK FOR NaN**:
+
+1. **Always check in comparisons** (sort, min, max, equals)
+2. **Check before aggregations** (sum, mean ignore NaN or propagate?)
+3. **Check in type inference** (column with NaN → Float64, not Int64)
+4. **Check in export** (CSV: write "NaN" or empty field?)
+
+**RULE**: Any Float64 comparison function MUST handle NaN explicitly. Never assume `std.math.order()` works for all float values.
+
+**IMPACT**:
+- **Before**: 112/113 tests passing, 1 critical crash
+- **After**: 113/113 tests passing, production-ready
+- **Lesson**: IEEE 754 special values (NaN, Inf, -0.0) are first-class citizens in data processing
 
 ---
 

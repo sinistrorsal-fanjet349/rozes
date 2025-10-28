@@ -47,7 +47,7 @@ pub fn select(
     // Validate all column names exist
     for (column_names) |name| {
         if (!df.hasColumn(name)) {
-            std.log.err("Column not found: {s}", .{name});
+            // Return error without logging - let caller decide to log
             return error.ColumnNotFound;
         }
     }

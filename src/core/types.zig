@@ -82,8 +82,10 @@ pub const ColumnDesc = struct {
 
     /// Creates a column descriptor
     pub fn init(name: []const u8, value_type: ValueType, index: u32) ColumnDesc {
-        std.debug.assert(name.len > 0); // Column name cannot be empty
+        // Allow empty column names - RFC 4180 doesn't forbid them
+        // Empty column names are valid edge cases (e.g., ",b,c" header row)
         std.debug.assert(index < std.math.maxInt(u32)); // Reasonable column limit
+        std.debug.assert(@intFromPtr(name.ptr) != 0); // Name pointer must be valid
 
         return ColumnDesc{
             .name = name,

@@ -30,7 +30,7 @@ yarn.lock
 *.tgz
 
 # Test artifacts
-test262/
+/test262/
 test-results/
 coverage/
 *.profraw

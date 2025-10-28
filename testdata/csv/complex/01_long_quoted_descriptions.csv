@@ -1,0 +1,6 @@
+id,product,explanation,price
+1,"Widget A","This is a simple widget, used for basic tasks, assembly required, includes screws, bolts, washers",19.99
+2,"Gadget B","Advanced electronic device with multiple features: WiFi connectivity, Bluetooth 5.0, touchscreen interface, USB-C charging port, water-resistant casing, compatible with iOS and Android",89.99
+3,"Tool C","Professional-grade tool designed for heavy-duty applications, featuring: ergonomic grip, variable speed control, LED work light, dust collection system, includes carrying case, 5-year warranty, meets all safety standards",159.99
+4,"Device D","Smart home integration device, works seamlessly with Alexa, Google Assistant, Apple HomeKit, supports 2.4GHz and 5GHz networks, automatic firmware updates, energy monitoring capabilities, scheduling features, geofencing support, mobile app control from anywhere in the world, customizable scenes and automations",249.99
+5,"Component E","A specialized component with very specific use cases: industrial manufacturing, automotive applications, aerospace engineering, marine equipment, requires expert installation, must be calibrated before use, temperature range -40°C to 85°C, pressure rated to 3000 PSI, corrosion-resistant coating, comes with detailed technical documentation and installation guide",599.99

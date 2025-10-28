@@ -1,0 +1,6 @@
+timestamp	event_type	user_id	action	details
+2025-10-28T08:15:30Z	login	user_12345	successful	IP: 192.168.1.100
+2025-10-28T08:16:45Z	page_view	user_12345	dashboard	session_id: abc123def456
+2025-10-28T08:18:22Z	api_call	user_12345	fetch_data	endpoint: /api/v1/users
+2025-10-28T08:20:10Z	logout	user_12345	successful	duration: 4m 40s
+2025-10-28T08:25:55Z	login	user_67890	failed	reason: invalid_password

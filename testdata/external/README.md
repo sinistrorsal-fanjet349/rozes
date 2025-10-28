@@ -2,140 +2,131 @@
 
 This directory contains official CSV conformance test suites from external sources.
 
-## Test Suites
+## Test Suites Overview
 
-### 1. csv-spectrum (MIT License)
+### 1. csv-spectrum (12 CSV files)
 
 **Source**: https://github.com/maxogden/csv-spectrum
-**Tests**: 15 CSV edge cases with expected JSON outputs
-**Location**: `csv-spectrum/`
+**License**: MIT
+**Location**: `csv-spectrum/csvs/`
+**Status**: ✅ Already downloaded
 
-Tests include:
+**Coverage**:
 - Empty fields
 - Escaped quotes
 - JSON data in CSV
 - Newlines in quoted fields
-- Quotes and newlines
-- Simple CSV
 - UTF-8 encoding
+- CRLF line endings
 
-**Usage**:
-```bash
-# Run csv-spectrum conformance tests
-cd csv-spectrum
-ls *.csv | while read file; do
-    echo "Testing: $file"
-    # Parse CSV and compare with expected JSON
-done
-```
-
-### 2. Papa Parse Tests
+### 2. Papa Parse (66 tests)
 
 **Source**: https://github.com/mholt/PapaParse
-**Tests**: 100+ unit test cases
-**Location**: `PapaParse/tests/`
+**License**: MIT
+**Location**:
+- Original CSVs: `PapaParse/tests/` (5 files)
+- Extracted tests: `PapaParse/extracted/` (61 files)
 
-**Usage**:
-Extract test cases from `test-cases.js` and convert to CSV fixtures.
-
-### 3. uniVocity CSV Parser Comparison
-
-**Source**: https://github.com/uniVocity/csv-parsers-comparison
-**Tests**: 50+ real-world CSV files
-**Location**: `csv-parsers-comparison/src/main/resources/`
-
-**Usage**:
-Use CSV files from `src/main/resources/` for edge case testing.
-
-## Integration with Rozes
-
-### Automated Testing
-
-Create a Zig test that runs all external conformance tests:
-
-```zig
-// test/unit/csv/external_conformance_test.zig
-
-test "csv-spectrum conformance" {
-    const test_dir = "testdata/external/csv-spectrum/";
-    var dir = try std.fs.cwd().openIterableDir(test_dir, .{});
-    defer dir.close();
-
-    var iter = dir.iterate();
-    while (try iter.next()) |entry| {
-        if (!std.mem.endsWith(u8, entry.name, ".csv")) continue;
-
-        const csv_path = try std.fmt.allocPrint(
-            allocator,
-            "{s}{s}",
-            .{ test_dir, entry.name }
-        );
-        defer allocator.free(csv_path);
-
-        // Load CSV
-        const csv_data = try std.fs.cwd().readFileAlloc(
-            allocator,
-            csv_path,
-            1024 * 1024
-        );
-        defer allocator.free(csv_data);
-
-        // Parse with Rozes
-        const df = try DataFrame.fromCSVBuffer(allocator, csv_data, .{});
-        defer df.free();
-
-        // Load expected JSON
-        const json_path = try std.fmt.allocPrint(
-            allocator,
-            "{s}{s}.json",
-            .{ test_dir, entry.name[0..entry.name.len - 4] }
-        );
-        defer allocator.free(json_path);
-
-        // Compare results
-        // ... validation logic ...
-    }
-}
+**Extraction Script**: `../../scripts/extract_papaparse_tests.js`
+```bash
+# Re-extract tests if needed
+node scripts/extract_papaparse_tests.js
 ```
 
-### Browser Testing
+**Coverage**:
+- Quoted fields with embedded delimiters
+- Quoted fields with line breaks
+- Escaped quotes within quoted fields
+- Comment handling
+- Whitespace preservation
+- Empty fields and edge cases
+- Duplicate header names
 
-Update `test/browser/tests.js` to include external tests:
+### 3. univocity-parsers (22 CSV/TSV files)
 
-```javascript
-// Add csv-spectrum tests
-const csvSpectrumTests = await loadCsvSpectrumTests();
-testSuites.csvSpectrum = {
-    name: 'CSV Spectrum (External)',
-    description: 'Official CSV edge case tests',
-    tests: csvSpectrumTests
-};
+**Source**: https://github.com/uniVocity/univocity-parsers
+**License**: Apache 2.0
+**Location**: `univocity-parsers/src/test/resources/`
+- `csv/` - 8 CSV files
+- `tsv/` - 3 TSV files (tab-separated values)
+- `examples/` - 11 CSV/TSV files
+
+**Download**:
+```bash
+cd testdata/external
+git clone --depth 1 https://github.com/uniVocity/univocity-parsers.git
 ```
 
-## License Compliance
+**Coverage**:
+- DOS line endings (CRLF)
+- Mac line endings (CR)
+- Unix line endings (LF)
+- TSV parsing
+- Real-world CSV examples
+- Bean mapping examples
 
-All test suites are under permissive licenses (MIT):
-- ✅ csv-spectrum: MIT License
-- ✅ Papa Parse: MIT License
-- ✅ uniVocity: Apache License 2.0
+## Total Test Count
 
-Ensure attribution when using these tests in documentation.
+**100 CSV/TSV files** from external sources:
+- 12 csv-spectrum
+- 66 Papa Parse (5 original + 61 extracted)
+- 22 univocity-parsers
+
+Combined with custom tests:
+- 10 RFC 4180 compliance tests
+- 7 edge case tests
+
+**Grand Total**: 113 conformance tests
+
+## Running Tests
+
+```bash
+# Run all conformance tests
+zig build conformance
+
+# Current results:
+# Total:   113
+# Passed:  112
+# Failed:  1
+# Pass rate: 99%
+```
+
+## Failed Tests (1 total)
+
+### Edge Case: CSV with Only Delimiter
+- `037_input_is_just_the_delimiter_2_empty_fields.csv` - CSV containing only `,`
+  - **Issue**: Header detection logic treats `,` as header row with 2 empty column names, resulting in 0 data rows
+  - **Papa Parse**: Treats as 1 data row with 2 empty fields when `header: false`
+  - **Status**: Acceptable edge case for MVP - extremely rare in real-world usage
 
 ## Updating Test Suites
 
 To update to the latest versions:
 
 ```bash
-cd testdata/external/csv-spectrum
-git pull origin master
+cd testdata/external
 
-cd ../PapaParse
-git pull origin master
+# Update csv-spectrum
+cd csv-spectrum && git pull origin master && cd ..
 
-cd ../csv-parsers-comparison
-git pull origin master
+# Update Papa Parse
+cd PapaParse && git pull origin master && cd ..
+node ../../scripts/extract_papaparse_tests.js
+
+# Update univocity-parsers
+cd univocity-parsers && git pull origin main && cd ..
 ```
+
+## License Compliance
+
+All test suites use permissive licenses:
+- ✅ csv-spectrum: MIT License
+- ✅ Papa Parse: MIT License
+- ✅ univocity-parsers: Apache License 2.0
+
+Attribution is provided in this README and in the main project documentation.
 
 ---
 
 **Last Updated**: 2025-10-27
+**Rozes Version**: 0.2.0+

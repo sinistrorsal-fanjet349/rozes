@@ -36,13 +36,16 @@ pub const SeriesValue = series.SeriesValue;
 pub const dataframe = @import("core/dataframe.zig");
 pub const DataFrame = dataframe.DataFrame;
 pub const RowRef = dataframe.RowRef;
+pub const SortOrder = dataframe.SortOrder;
+pub const SortSpec = dataframe.SortSpec;
+
+// DataFrame operations
+pub const sort = @import("core/sort.zig");
+pub const operations = @import("core/operations.zig");
 
 // CSV parsing
 pub const csv = @import("csv/parser.zig");
 pub const CSVParser = csv.CSVParser;
-
-// DataFrame operations (to be implemented)
-// pub const operations = @import("core/operations.zig");
 
 /// Library version
 pub const VERSION = "0.1.0-dev";
@@ -60,10 +63,12 @@ test {
     _ = @import("core/series.zig");
     _ = @import("core/dataframe.zig");
     _ = @import("core/operations.zig");
+    _ = @import("core/sort.zig");
     _ = @import("csv/parser.zig");
     _ = @import("csv/export.zig");
 
     // Include dedicated test files
+    _ = @import("test/unit/core/sort_test.zig");
     // NOTE: conformance_test.zig uses @embedFile which requires testdata/ to be
     // inside src/ or configured in build.zig. This is pending proper configuration.
     // For now, conformance tests are run manually in the test files themselves.

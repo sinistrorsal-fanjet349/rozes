@@ -1,0 +1,6 @@
+id,name,price,category
+1,"Item A",19.99
+2,"Item B",29.99,"Electronics","Extra Field"
+3,"Item C",39.99,"Books"
+4,"Item D"
+5,"Item E",49.99,"Toys","Category2","Too","Many","Fields"

@@ -1,0 +1,4 @@
+id,name,description
+1,"Product A","This description starts with a quote but never ends
+2,"Product B","This one is fine"
+3,"Product C,"Another malformed entry

@@ -301,7 +301,65 @@ pub const DataFrame = struct {
         const ops = @import("operations.zig");
         return ops.mean(self, column_name);
     }
+
+    /// Sorts DataFrame by a single column
+    ///
+    /// Args:
+    ///   - allocator: Allocator for new DataFrame
+    ///   - column_name: Name of column to sort by
+    ///   - order: Ascending or Descending
+    ///
+    /// Returns: New sorted DataFrame (caller owns, must call deinit())
+    ///
+    /// Performance: O(n log n) where n is number of rows
+    ///
+    /// Example:
+    /// ```zig
+    /// var sorted = try df.sort(allocator, "age", .Ascending);
+    /// defer sorted.deinit();
+    /// ```
+    pub fn sort(
+        self: *const DataFrame,
+        allocator: std.mem.Allocator,
+        column_name: []const u8,
+        order: SortOrder,
+    ) !DataFrame {
+        const sort_mod = @import("sort.zig");
+        return sort_mod.sort(self, allocator, column_name, order);
+    }
+
+    /// Sorts DataFrame by multiple columns
+    ///
+    /// Args:
+    ///   - allocator: Allocator for new DataFrame
+    ///   - specs: Array of SortSpec (column name + order)
+    ///
+    /// Returns: New sorted DataFrame (caller owns, must call deinit())
+    ///
+    /// Performance: O(n log n * k) where n is rows, k is number of sort columns
+    ///
+    /// Example:
+    /// ```zig
+    /// const specs = [_]SortSpec{
+    ///     .{ .column = "city", .order = .Ascending },
+    ///     .{ .column = "age", .order = .Descending },
+    /// };
+    /// var sorted = try df.sortBy(allocator, &specs);
+    /// defer sorted.deinit();
+    /// ```
+    pub fn sortBy(
+        self: *const DataFrame,
+        allocator: std.mem.Allocator,
+        specs: []const SortSpec,
+    ) !DataFrame {
+        const sort_mod = @import("sort.zig");
+        return sort_mod.sortBy(self, allocator, specs);
+    }
 };
+
+// Re-export sort types for convenience
+pub const SortOrder = @import("sort.zig").SortOrder;
+pub const SortSpec = @import("sort.zig").SortSpec;
 
 /// Reference to a single row in a DataFrame
 pub const RowRef = struct {
