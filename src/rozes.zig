@@ -46,6 +46,11 @@ pub const Summary = dataframe.Summary;
 // DataFrame operations
 pub const sort = @import("core/sort.zig");
 pub const operations = @import("core/operations.zig");
+pub const reshape = @import("core/reshape.zig");
+pub const PivotOptions = reshape.PivotOptions;
+pub const MeltOptions = reshape.MeltOptions;
+pub const StackOptions = reshape.StackOptions;
+pub const UnstackOptions = reshape.UnstackOptions;
 
 // CSV parsing
 pub const csv = @import("csv/parser.zig");
@@ -78,6 +83,7 @@ test {
     _ = @import("core/operations.zig");
     _ = @import("core/sort.zig");
     _ = @import("core/simd.zig");
+    _ = @import("core/reshape.zig");
     _ = @import("csv/parser.zig");
     _ = @import("csv/export.zig");
     _ = @import("json/parser.zig");
@@ -87,6 +93,7 @@ test {
     _ = @import("test/unit/core/groupby_test.zig");
     _ = @import("test/unit/core/join_test.zig");
     _ = @import("test/unit/core/additional_ops_test.zig");
+    _ = @import("test/unit/core/reshape_test.zig");
 
     // New comprehensive test files (added 2025-10-28)
     _ = @import("test/unit/core/operations_test.zig");

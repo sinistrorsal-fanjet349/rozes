@@ -38,16 +38,16 @@ const MAX_COLUMNS: u32 = 10_000;
 
 /// Fill method for missing values
 pub const FillMethod = enum {
-    Constant,      // Fill with specific value
-    ForwardFill,   // Use previous value (ffill)
-    BackwardFill,  // Use next value (bfill)
-    Interpolate,   // Linear interpolation (numeric only)
+    Constant, // Fill with specific value
+    ForwardFill, // Use previous value (ffill)
+    BackwardFill, // Use next value (bfill)
+    Interpolate, // Linear interpolation (numeric only)
 };
 
 /// Options for dropna operation
 pub const DropNaOptions = struct {
     subset: ?[]const []const u8 = null, // Columns to check (null = check all)
-    how: DropHow = .Any,                // How to determine if row should be dropped
+    how: DropHow = .Any, // How to determine if row should be dropped
 };
 
 /// How to determine if row should be dropped
@@ -483,8 +483,8 @@ fn shouldKeepRow(
     std.debug.assert(col_idx == columns_to_check.len); // Post-condition
 
     return switch (opts.how) {
-        .Any => !has_missing,       // Keep if NO columns are missing
-        .All => !all_missing,       // Keep if NOT ALL columns are missing
+        .Any => !has_missing, // Keep if NO columns are missing
+        .All => !all_missing, // Keep if NOT ALL columns are missing
     };
 }
 

@@ -1048,6 +1048,79 @@ if (entry_idx >= MAX_MATCHES_PER_KEY and entry_idx < entries.len) {
 
 ---
 
+### Learning #12: NaN Handling in Pivot/Aggregation Operations 🔥
+
+**Discovery**: Pivot fills missing combinations with NaN BUT rejects NaN in source data (inconsistency).
+
+**Problem**: Real-world datasets contain NaN (sensor failures, 0/0, missing imports). Pivot should handle gracefully.
+
+**Solution**: Use 0.0 instead of NaN for missing combinations (consistent with aggregation semantics):
+
+```zig
+// ✅ CORRECT - Consistent NaN handling
+const value = if (result.cells.get(cell_hash)) |cell|
+    cell.getAggregate(aggfunc)
+else
+    0.0;  // ✅ Missing combination = zero contribution
+
+std.debug.assert(!std.math.isNan(value)); // Post-condition
+```
+
+**Validation**: Reject NaN in source data with clear error:
+
+```zig
+fn getNumericValueAtRow(series: *const Series, row_idx: u32) !f64 {
+    const result = switch (series.value_type) {
+        .Float64 => series.data.Float64[row_idx],
+        // ...
+    };
+
+    if (std.math.isNan(result)) {
+        std.log.err("Pivot source data contains NaN at row {} - not supported", .{row_idx});
+        return error.NanValueNotSupported;
+    }
+
+    std.debug.assert(!std.math.isNan(result)); // Post-condition
+    return result;
+}
+```
+
+**Impact**: Prevents production crashes from NaN data, consistent aggregation behavior.
+
+---
+
+### Learning #13: Post-Loop Assertions are Mandatory 🔥
+
+**Discovery**: 15+ loops missing post-condition assertions (Tiger Style requirement).
+
+**Problem**: Loop termination not verified, off-by-one errors undetected.
+
+**Pattern**: Every bounded loop MUST assert termination condition:
+
+```zig
+// ✅ CORRECT - Post-loop assertion
+var row_idx: u32 = 0;
+while (row_idx < df.row_count and row_idx < MAX_ROWS) : (row_idx += 1) {
+    // ... process row
+}
+std.debug.assert(row_idx == df.row_count or row_idx == MAX_ROWS); // ✅ Mandatory
+
+// For nested loops - assert EACH level
+var col_idx: u32 = 0;
+while (col_idx < MAX_COLS and col_idx < df.columns.len) : (col_idx += 1) {
+    var row_idx: u32 = 0;
+    while (row_idx < MAX_ROWS and row_idx < df.row_count) : (row_idx += 1) {
+        // ...
+    }
+    std.debug.assert(row_idx == df.row_count or row_idx == MAX_ROWS); // ✅ Inner
+}
+std.debug.assert(col_idx == df.columns.len or col_idx == MAX_COLS); // ✅ Outer
+```
+
+**Impact**: 15+ missing assertions added, full Tiger Style compliance.
+
+---
+
 ## Source Organization
 
 ### Directory Structure

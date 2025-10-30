@@ -367,9 +367,9 @@ test "isna creates boolean mask for missing values" {
     const result = mask.asBool() orelse unreachable;
 
     try testing.expectEqual(false, result[0]);
-    try testing.expectEqual(true, result[1]);  // NaN
+    try testing.expectEqual(true, result[1]); // NaN
     try testing.expectEqual(false, result[2]);
-    try testing.expectEqual(true, result[3]);  // NaN
+    try testing.expectEqual(true, result[3]); // NaN
     try testing.expectEqual(false, result[4]);
 }
 

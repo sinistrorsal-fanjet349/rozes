@@ -271,9 +271,7 @@ pub const Series = struct {
                 defer arena.deinit();
                 const temp_allocator = arena.allocator();
 
-                const hint = std.fmt.allocPrint(temp_allocator,
-                    "Index {} out of bounds for series '{s}' with length {}. Valid range: 0 to {}",
-                    .{ idx, self.name, self.length, self.length - 1 }) catch unreachable;
+                const hint = std.fmt.allocPrint(temp_allocator, "Index {} out of bounds for series '{s}' with length {}. Valid range: 0 to {}", .{ idx, self.name, self.length, self.length - 1 }) catch unreachable;
 
                 const err_msg = types.RichError.init(.IndexOutOfBounds, "Series index out of bounds")
                     .withColumn(self.name)
@@ -310,9 +308,7 @@ pub const Series = struct {
             defer arena.deinit();
             const temp_allocator = arena.allocator();
 
-            const hint = try std.fmt.allocPrint(temp_allocator,
-                "Index {} out of bounds for series '{s}' with length {}. Valid range: 0 to {}",
-                .{ idx, self.name, self.length, self.length - 1 });
+            const hint = try std.fmt.allocPrint(temp_allocator, "Index {} out of bounds for series '{s}' with length {}. Valid range: 0 to {}", .{ idx, self.name, self.length, self.length - 1 });
 
             const err_msg = types.RichError.init(.IndexOutOfBounds, "Series index out of bounds in set()")
                 .withColumn(self.name)
@@ -334,9 +330,7 @@ pub const Series = struct {
                     defer arena.deinit();
                     const temp_allocator = arena.allocator();
 
-                    const hint = try std.fmt.allocPrint(temp_allocator,
-                        "Series '{s}' has type Int64, but received {s}",
-                        .{ self.name, @tagName(value) });
+                    const hint = try std.fmt.allocPrint(temp_allocator, "Series '{s}' has type Int64, but received {s}", .{ self.name, @tagName(value) });
 
                     const err_msg = types.RichError.init(.TypeMismatch, "Type mismatch in set()")
                         .withColumn(self.name)
@@ -358,9 +352,7 @@ pub const Series = struct {
                     defer arena.deinit();
                     const temp_allocator = arena.allocator();
 
-                    const hint = try std.fmt.allocPrint(temp_allocator,
-                        "Series '{s}' has type Float64, but received {s}",
-                        .{ self.name, @tagName(value) });
+                    const hint = try std.fmt.allocPrint(temp_allocator, "Series '{s}' has type Float64, but received {s}", .{ self.name, @tagName(value) });
 
                     const err_msg = types.RichError.init(.TypeMismatch, "Type mismatch in set()")
                         .withColumn(self.name)
@@ -382,9 +374,7 @@ pub const Series = struct {
                     defer arena.deinit();
                     const temp_allocator = arena.allocator();
 
-                    const hint = try std.fmt.allocPrint(temp_allocator,
-                        "Series '{s}' has type Bool, but received {s}",
-                        .{ self.name, @tagName(value) });
+                    const hint = try std.fmt.allocPrint(temp_allocator, "Series '{s}' has type Bool, but received {s}", .{ self.name, @tagName(value) });
 
                     const err_msg = types.RichError.init(.TypeMismatch, "Type mismatch in set()")
                         .withColumn(self.name)
@@ -410,9 +400,7 @@ pub const Series = struct {
                 defer arena.deinit();
                 const temp_allocator = arena.allocator();
 
-                const hint = try std.fmt.allocPrint(temp_allocator,
-                    "Series '{s}' has type {s} which doesn't support set()",
-                    .{ self.name, @tagName(self.value_type) });
+                const hint = try std.fmt.allocPrint(temp_allocator, "Series '{s}' has type {s} which doesn't support set()", .{ self.name, @tagName(self.value_type) });
 
                 const err_msg = types.RichError.init(.TypeMismatch, "Type mismatch in set()")
                     .withColumn(self.name)
@@ -450,9 +438,7 @@ pub const Series = struct {
             defer arena.deinit();
             const temp_allocator = arena.allocator();
 
-            const hint = try std.fmt.allocPrint(temp_allocator,
-                "Series '{s}' is at capacity {} with {} elements. Cannot append more elements. Consider pre-allocating larger capacity when creating Series.",
-                .{ self.name, capacity, self.length });
+            const hint = try std.fmt.allocPrint(temp_allocator, "Series '{s}' is at capacity {} with {} elements. Cannot append more elements. Consider pre-allocating larger capacity when creating Series.", .{ self.name, capacity, self.length });
 
             const err_msg = types.RichError.init(.InvalidOptions, "Series at capacity")
                 .withColumn(self.name)
@@ -641,9 +627,7 @@ pub const StringColumn = struct {
                 defer arena.deinit();
                 const temp_allocator = arena.allocator();
 
-                const hint = try std.fmt.allocPrint(temp_allocator,
-                    "String buffer reached maximum size {} bytes but needs {} bytes. Consider splitting data across multiple columns or using external storage.",
-                    .{ MAX_BUFFER_SIZE, needed_size });
+                const hint = try std.fmt.allocPrint(temp_allocator, "String buffer reached maximum size {} bytes but needs {} bytes. Consider splitting data across multiple columns or using external storage.", .{ MAX_BUFFER_SIZE, needed_size });
 
                 const err_msg = types.RichError.init(.InvalidOptions, "String buffer too small")
                     .withHint(hint);

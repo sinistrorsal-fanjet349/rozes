@@ -388,16 +388,13 @@ pub const CSVParser = struct {
 
                 const err_msg = RichError.init(.InvalidFormat, "Too many columns in CSV")
                     .withRow(self.current_row_index + 1)
-                    .withHint(try std.fmt.allocPrint(allocator,
-                        "Found {} columns, maximum is {}. Check for unescaped delimiters in quoted fields.",
-                        .{ col_count, MAX_COLUMNS }));
+                    .withHint(try std.fmt.allocPrint(allocator, "Found {} columns, maximum is {}. Check for unescaped delimiters in quoted fields.", .{ col_count, MAX_COLUMNS }));
 
                 if (err_msg.format(allocator)) |formatted| {
                     defer allocator.free(formatted);
                     std.log.err("{s}", .{formatted});
                 } else |_| {
-                    std.log.err("Too many columns at row {}: found {}, max {}",
-                        .{ self.current_row_index + 1, col_count, MAX_COLUMNS });
+                    std.log.err("Too many columns at row {}: found {}, max {}", .{ self.current_row_index + 1, col_count, MAX_COLUMNS });
                 }
 
                 return error.TooManyColumns;

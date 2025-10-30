@@ -1,6 +1,5 @@
 /// Stats Module Edge Case Tests
 /// Tests for corner cases, error handling, and edge values
-
 const std = @import("std");
 const testing = std.testing;
 const stats = @import("../../../core/stats.zig");
@@ -76,9 +75,9 @@ test "Stats: percentileRank with 0.0, 0.5, 1.0" {
     defer result.deinit(allocator);
 
     const pct_ranks = result.asFloat64().?;
-    try testing.expectEqual(@as(f64, 0.0), pct_ranks[0]);   // Min → 0.0
-    try testing.expectEqual(@as(f64, 0.5), pct_ranks[1]);   // Mid → 0.5
-    try testing.expectEqual(@as(f64, 1.0), pct_ranks[2]);   // Max → 1.0
+    try testing.expectEqual(@as(f64, 0.0), pct_ranks[0]); // Min → 0.0
+    try testing.expectEqual(@as(f64, 0.5), pct_ranks[1]); // Mid → 0.5
+    try testing.expectEqual(@as(f64, 1.0), pct_ranks[2]); // Max → 1.0
 }
 
 // Test: variance with single value (should return 0)
