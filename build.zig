@@ -79,6 +79,28 @@ pub fn build(b: *std.Build) void {
     // The main benchmark now includes both full pipeline join (with CSV overhead)
     // and pure join algorithm performance measurements.
 
+    // Memory tests (Node.js with --expose-gc flag)
+    // These are fast automated tests (<5 minutes total) for CI/CD
+    const memory_test_step = b.step("memory-test", "Run fast memory leak tests (5 tests, ~5 minutes)");
+
+    const memory_tests = [_][]const u8{
+        "src/test/nodejs/memory/gc_verification_test.js",
+        "src/test/nodejs/memory/wasm_memory_test.js",
+        "src/test/nodejs/memory/error_recovery_test.js",
+        "src/test/nodejs/memory/auto_vs_manual_test.js",
+        "src/test/nodejs/memory/memory_pressure_test.js",
+    };
+
+    for (memory_tests) |test_file| {
+        const run_memory_test = b.addSystemCommand(&[_][]const u8{
+            "node",
+            "--expose-gc", // Required for GC testing
+            test_file,
+        });
+        run_memory_test.setCwd(b.path(".")); // Run from project root
+        memory_test_step.dependOn(&run_memory_test.step);
+    }
+
     // Wasm build for browser
     // Using wasi instead of freestanding to get POSIX-like APIs (needed for ArenaAllocator)
     const wasm_target = b.resolveTargetQuery(.{

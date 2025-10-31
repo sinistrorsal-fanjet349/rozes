@@ -53,7 +53,7 @@ async function main() {
   const ages = df.column('age'); // Float64Array [30, 25]
   console.log(Array.from(ages));
 
-  df.free(); // Always free when done!
+  // Memory freed automatically! (Can still call df.free() for immediate cleanup)
 }
 
 main();
@@ -265,32 +265,206 @@ if (ids) {
 
 ---
 
-### `df.free(): void`
+### `df.filter(columnName: string, operator: string, value: number): DataFrame`
 
-Release DataFrame memory.
+Filter DataFrame rows by numeric condition.
 
-**IMPORTANT**: You **must** call `free()` when done with a DataFrame to release WebAssembly memory. JavaScript garbage collection does not automatically free WASM memory.
+**Parameters**:
+- `columnName`: Column to filter on (must be numeric)
+- `operator`: Comparison operator: `'=='`, `'!='`, `'>'`, `'<'`, `'>='`, `'<='`
+- `value`: Value to compare against
+
+**Returns**: New filtered DataFrame
 
 **Example**:
 
 ```javascript
 const df = rozes.DataFrame.fromCSV(csvText);
-// ... use df
-df.free(); // Release memory
+
+// Filter: age >= 30
+const adults = df.filter('age', '>=', 30);
+console.log(`${adults.shape.rows} adults`);
+adults.free();
+
+// Filter: salary > 100000
+const highEarners = df.filter('salary', '>', 100000);
+console.log(`${highEarners.shape.rows} high earners`);
+highEarners.free();
+
+// Filter: years_experience == 5
+const fiveYears = df.filter('years_experience', '==', 5);
+fiveYears.free();
 ```
 
-**Best Practice**: Use try/finally for guaranteed cleanup
+**Notes**:
+- Only works on numeric columns (Int32, Int64, Float64)
+- String column filtering not supported in 1.0.0 (planned for 1.1.0)
+- Returns new DataFrame - remember to call `.free()` when done
+
+---
+
+### `df.select(columnNames: string[]): DataFrame`
+
+Select specific columns from DataFrame.
+
+**Parameters**:
+- `columnNames`: Array of column names to select
+
+**Returns**: New DataFrame with selected columns only
+
+**Example**:
 
 ```javascript
 const df = rozes.DataFrame.fromCSV(csvText);
+
+// Select specific columns
+const subset = df.select(['name', 'age', 'salary']);
+console.log(subset.columns); // ['name', 'age', 'salary']
+subset.free();
+
+// Select numeric columns only
+const numeric = df.select(['age', 'salary', 'years_experience']);
+numeric.free();
+```
+
+**Notes**:
+- Column order in result matches order in `columnNames` array
+- Non-existent columns are ignored
+- Returns new DataFrame - remember to call `.free()` when done
+
+---
+
+### `df.head(n: number): DataFrame`
+
+Get first n rows of DataFrame.
+
+**Parameters**:
+- `n`: Number of rows to return
+
+**Returns**: New DataFrame with first n rows
+
+**Example**:
+
+```javascript
+const df = rozes.DataFrame.fromCSV(csvText);
+
+// Get first 10 rows
+const top10 = df.head(10);
+console.log(`First ${top10.shape.rows} rows`);
+top10.free();
+
+// Get first 5 rows
+const preview = df.head(5);
+preview.free();
+```
+
+**Notes**:
+- If `n` is greater than row count, returns all rows
+- Returns new DataFrame - remember to call `.free()` when done
+
+---
+
+### `df.tail(n: number): DataFrame`
+
+Get last n rows of DataFrame.
+
+**Parameters**:
+- `n`: Number of rows to return
+
+**Returns**: New DataFrame with last n rows
+
+**Example**:
+
+```javascript
+const df = rozes.DataFrame.fromCSV(csvText);
+
+// Get last 10 rows
+const bottom10 = df.tail(10);
+console.log(`Last ${bottom10.shape.rows} rows`);
+bottom10.free();
+
+// Get last 5 rows
+const recent = df.tail(5);
+recent.free();
+```
+
+**Notes**:
+- If `n` is greater than row count, returns all rows
+- Returns new DataFrame - remember to call `.free()` when done
+
+---
+
+### `df.sort(columnName: string, descending?: boolean): DataFrame`
+
+Sort DataFrame by column.
+
+**Parameters**:
+- `columnName`: Column to sort by (must be numeric in 1.0.0)
+- `descending`: Sort in descending order (default: `false` for ascending)
+
+**Returns**: New sorted DataFrame
+
+**Example**:
+
+```javascript
+const df = rozes.DataFrame.fromCSV(csvText);
+
+// Sort by age (ascending)
+const byAge = df.sort('age');
+const ages = byAge.column('age');
+console.log(Array.from(ages)); // [25, 28, 30, 35, 40, ...]
+byAge.free();
+
+// Sort by salary (descending)
+const bySalary = df.sort('salary', true);
+const salaries = bySalary.column('salary');
+console.log(Array.from(salaries)); // [125000, 115000, 110000, ...]
+bySalary.free();
+```
+
+**Notes**:
+- Only works on numeric columns in 1.0.0 (Int32, Int64, Float64)
+- String column sorting planned for 1.1.0
+- Returns new DataFrame - remember to call `.free()` when done
+- Stable sort (preserves relative order of equal elements)
+
+---
+
+### `df.free(): void`
+
+Release DataFrame memory.
+
+**By default** (autoCleanup: true): Memory is freed automatically when the DataFrame is garbage collected. Calling `free()` is **optional** but **recommended** for immediate cleanup.
+
+**Manual mode** (autoCleanup: false): You **must** call `free()` when done to prevent memory leaks.
+
+**Example (default - auto cleanup)**:
+
+```javascript
+const df = rozes.DataFrame.fromCSV(csvText);
+// ... use df
+// Memory freed automatically on GC
+// Can still call df.free() for immediate cleanup (recommended)
+df.free(); // Optional but recommended
+```
+
+**Example (manual mode - production)**:
+
+```javascript
+const df = rozes.DataFrame.fromCSV(csvText, { autoCleanup: false });
 try {
   // Use df
   const ages = df.column('age');
   console.log(ages);
 } finally {
-  df.free(); // Always runs, even if error
+  df.free(); // MUST call - always runs, even if error
 }
 ```
+
+**Why call free() even with auto cleanup?**
+- Immediate memory release (no waiting for GC)
+- ~3× faster in tight loops
+- Predictable performance
 
 ---
 
@@ -304,6 +478,7 @@ interface CSVOptions {
   has_headers?: boolean;        // First row contains headers (default: true)
   skip_blank_lines?: boolean;   // Skip blank lines (default: true)
   trim_whitespace?: boolean;    // Trim whitespace from fields (default: false)
+  autoCleanup?: boolean;        // Automatically free memory on GC (default: true)
 }
 ```
 
@@ -367,6 +542,14 @@ class DataFrame {
   readonly length: number;
 
   column(name: string): Float64Array | Int32Array | BigInt64Array | null;
+
+  // DataFrame operations (1.0.0)
+  filter(columnName: string, operator: '==' | '!=' | '>' | '<' | '>=' | '<=', value: number): DataFrame;
+  select(columnNames: string[]): DataFrame;
+  head(n: number): DataFrame;
+  tail(n: number): DataFrame;
+  sort(columnName: string, descending?: boolean): DataFrame;
+
   free(): void;
 }
 ```
@@ -450,22 +633,33 @@ try {
 
 ## Memory Management
 
-### Why Manual Memory Management?
+### Automatic vs Manual Cleanup
 
-Rozes uses WebAssembly, which has separate memory from JavaScript. You must explicitly call `df.free()` to release WASM memory.
+**Default (autoCleanup: true)**: Memory is freed automatically when DataFrame is garbage collected. No need to call `df.free()`, but it's still recommended for immediate cleanup.
+
+**Manual Mode (autoCleanup: false)**: You must explicitly call `df.free()` to release WASM memory.
 
 ### Best Practices
 
-**1. Always use try/finally**:
+**1. Default mode - optional free (recommended for most cases)**:
 
 ```javascript
 const df = rozes.DataFrame.fromCSV(csvText);
+// Use df
+const result = processData(df);
+df.free(); // Optional but recommended for immediate cleanup
+```
+
+**2. Manual mode - required free (production/performance-critical)**:
+
+```javascript
+const df = rozes.DataFrame.fromCSV(csvText, { autoCleanup: false });
 try {
   // Use df
   const result = processData(df);
   return result;
 } finally {
-  df.free(); // Always runs
+  df.free(); // MUST call - always runs
 }
 ```
 
@@ -609,6 +803,73 @@ Charlie,35,91.0`;
 main();
 ```
 
+### DataFrame Operations & Chaining
+
+```javascript
+const { Rozes } = require('rozes');
+
+async function main() {
+  const rozes = await Rozes.init();
+
+  const csv = `name,age,department,salary,years_experience
+Alice,30,Engineering,95000,5
+Bob,25,Sales,67000,2
+Charlie,35,Engineering,110000,10
+Diana,28,Marketing,72000,4
+Eve,45,Engineering,125000,18
+Frank,32,Sales,78000,7`;
+
+  const df = rozes.DataFrame.fromCSV(csv);
+
+  // Example 1: Filter operation
+  const adults = df.filter('age', '>=', 30);
+  console.log(`${adults.shape.rows} employees age >= 30`);
+  adults.free();
+
+  // Example 2: Select specific columns
+  const subset = df.select(['age', 'salary', 'years_experience']);
+  console.log(`Selected ${subset.shape.cols} columns`);
+  subset.free();
+
+  // Example 3: Sort by salary (descending)
+  const bySalary = df.sort('salary', true);
+  const topSalary = bySalary.column('salary');
+  console.log(`Top salary: $${topSalary[0]}`);
+  bySalary.free();
+
+  // Example 4: Head and tail
+  const top3 = df.head(3);
+  const bottom3 = df.tail(3);
+  console.log(`First 3 rows: ${top3.shape.rows}`);
+  console.log(`Last 3 rows: ${bottom3.shape.rows}`);
+  top3.free();
+  bottom3.free();
+
+  // Example 5: Operation chaining
+  // Goal: Find top 3 highest-paid employees over 30
+  const over30 = df.filter('age', '>', 30);
+  const highEarners = over30.filter('salary', '>', 70000);
+  const sorted = highEarners.sort('salary', true);
+  const top3HighEarners = sorted.head(3);
+
+  const salaries = top3HighEarners.column('salary');
+  const ages = top3HighEarners.column('age');
+  console.log('\nTop 3 highest-paid employees over 30:');
+  for (let i = 0; i < salaries.length; i++) {
+    console.log(`  ${i + 1}. Age ${ages[i]}, $${salaries[i].toLocaleString()}/year`);
+  }
+
+  // Clean up (in reverse order)
+  top3HighEarners.free();
+  sorted.free();
+  highEarners.free();
+  over30.free();
+  df.free();
+}
+
+main();
+```
+
 ### File I/O
 
 ```javascript
@@ -716,13 +977,21 @@ async function analyzeCSV(filePath: string): Promise<DataFrameShape> {
 - CSV export (`toCSV()`, `toCSVFile()`) - WASM export not yet implemented
 - String column access - only numeric columns via `column()`
 - Boolean column access - only numeric columns via `column()`
-- DataFrame operations (filter, select, sort, etc.) - Use Zig API for now
+- String/Boolean column filtering/sorting - only numeric operations supported
+- GroupBy and Join operations - planned for 1.1.0
 - Stream API for large files (>1GB)
+
+**Currently Available (1.0.0)**:
+- ✅ Numeric filtering (`filter()` with ==, !=, >, <, >=, <=)
+- ✅ Column selection (`select()`)
+- ✅ Sorting by numeric columns (`sort()`)
+- ✅ Head and tail operations (`head()`, `tail()`)
+- ✅ Operation chaining (combine multiple operations)
 
 **Workarounds**:
 - For string data: Use Zig API (see [ZIG_API.md](./ZIG_API.md))
-- For DataFrame operations: Use Zig API or wait for 1.1.0
 - For CSV export: Manually reconstruct from column data
+- For GroupBy/Join: Wait for 1.1.0 or use Zig API
 
 ---
 

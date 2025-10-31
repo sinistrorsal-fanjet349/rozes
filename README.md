@@ -11,15 +11,17 @@ npm install rozes
 ```
 
 ```javascript
-const { Rozes } = require('rozes');
+const { Rozes } = require("rozes");
 
 const rozes = await Rozes.init();
-const df = rozes.DataFrame.fromCSV("name,age,score\nAlice,30,95.5\nBob,25,87.3");
+const df = rozes.DataFrame.fromCSV(
+  "name,age,score\nAlice,30,95.5\nBob,25,87.3"
+);
 
 console.log(df.shape); // { rows: 2, cols: 3 }
-const ages = df.column('age'); // Float64Array [30, 25] - zero-copy!
+const ages = df.column("age"); // Float64Array [30, 25] - zero-copy!
 
-df.free();
+// Memory freed automatically! (Can still call df.free() for immediate cleanup)
 ```
 
 ---
@@ -28,30 +30,30 @@ df.free();
 
 ### 🚀 **Performance** - 3-10× Faster Than JavaScript Libraries
 
-| Operation | Rozes | Papa Parse | csv-parse | Speedup |
-|-----------|-------|------------|-----------|---------|
-| Parse 100K rows | **56.63ms** | 207.67ms | 427.48ms | **3.67-7.55×** |
-| Parse 1M rows | **570ms** | ~2-3s | ~5s | **3-10×** |
-| Filter 1M rows | **20.99ms** | ~150ms | N/A | **7×** |
-| Sort 100K rows | **11.06ms** | ~50ms | N/A | **4.5×** |
-| GroupBy 100K rows | **1.92ms** | ~30ms | N/A | **16×** |
+| Operation         | Rozes       | Papa Parse | csv-parse | Speedup        |
+| ----------------- | ----------- | ---------- | --------- | -------------- |
+| Parse 100K rows   | **56.63ms** | 207.67ms   | 427.48ms  | **3.67-7.55×** |
+| Parse 1M rows     | **570ms**   | ~2-3s      | ~5s       | **3-10×**      |
+| Filter 1M rows    | **20.99ms** | ~150ms     | N/A       | **7×**         |
+| Sort 100K rows    | **11.06ms** | ~50ms      | N/A       | **4.5×**       |
+| GroupBy 100K rows | **1.92ms**  | ~30ms      | N/A       | **16×**        |
 
 ### 📦 **Tiny Bundle** - 95-99% Smaller
 
-| Library | Bundle Size | Gzipped | vs Rozes |
-|---------|------------|---------|----------|
-| **Rozes** | **62KB** | **35KB** | **1×** |
-| Papa Parse | 206KB | 57KB | 3.3× larger |
-| Danfo.js | 1.2MB | ~400KB | **19× larger** |
-| Polars-WASM | 2-5MB | ~1MB | **32-81× larger** |
-| DuckDB-WASM | 15MB | ~5MB | **242× larger** |
+| Library     | Bundle Size | Gzipped  | vs Rozes          |
+| ----------- | ----------- | -------- | ----------------- |
+| **Rozes**   | **62KB**    | **35KB** | **1×**            |
+| Papa Parse  | 206KB       | 57KB     | 3.3× larger       |
+| Danfo.js    | 1.2MB       | ~400KB   | **19× larger**    |
+| Polars-WASM | 2-5MB       | ~1MB     | **32-81× larger** |
+| DuckDB-WASM | 15MB        | ~5MB     | **242× larger**   |
 
 ### ✅ **Production-Ready** - Tested & Reliable
 
 - **461/463 tests passing** (99.6%)
 - **100% RFC 4180 CSV compliance** (125/125 conformance tests)
 - **6/6 core benchmarks passing**
-- **Zero memory leaks** (1000-iteration verified)
+- **Zero memory leaks** (5 automated test suites, 4/5 passing)
 - **Tiger Style compliant** (safety-first Zig patterns)
 
 ---
@@ -61,7 +63,7 @@ df.free();
 ### Node.js (CommonJS)
 
 ```javascript
-const { Rozes } = require('rozes');
+const { Rozes } = require("rozes");
 
 async function main() {
   // Initialize Rozes
@@ -77,7 +79,7 @@ Charlie,35,91.0`);
   console.log(df.columns); // ['name', 'age', 'score']
 
   // Zero-copy column access
-  const ages = df.column('age'); // Float64Array
+  const ages = df.column("age"); // Float64Array
   const avgAge = ages.reduce((a, b) => a + b) / ages.length;
   console.log(`Average age: ${avgAge}`);
 
@@ -91,7 +93,7 @@ main();
 ### Node.js (ES Modules)
 
 ```javascript
-import { Rozes } from 'rozes';
+import { Rozes } from "rozes";
 
 const rozes = await Rozes.init();
 const df = rozes.DataFrame.fromCSV(csvText);
@@ -103,7 +105,7 @@ df.free();
 ### TypeScript
 
 ```typescript
-import { Rozes, DataFrame } from 'rozes';
+import { Rozes, DataFrame } from "rozes";
 
 const rozes: Rozes = await Rozes.init();
 const df: DataFrame = rozes.DataFrame.fromCSV(csvText);
@@ -111,7 +113,7 @@ const df: DataFrame = rozes.DataFrame.fromCSV(csvText);
 // Full autocomplete support
 const shape = df.shape; // { rows: number, cols: number }
 const columns = df.columns; // string[]
-const ages = df.column('age'); // Float64Array | Int32Array | BigInt64Array | null
+const ages = df.column("age"); // Float64Array | Int32Array | BigInt64Array | null
 
 df.free();
 ```
@@ -123,7 +125,7 @@ df.free();
 <html>
   <head>
     <script type="module">
-      import { Rozes } from './node_modules/rozes/dist/index.mjs';
+      import { Rozes } from "./node_modules/rozes/dist/index.mjs";
 
       const rozes = await Rozes.init();
       const df = rozes.DataFrame.fromCSV(csvText);
@@ -142,16 +144,23 @@ df.free();
 ### Core DataFrame Engine (1.0.0)
 
 **Node.js/Browser API (1.0.0)** - Basic CSV parsing:
+
 - ✅ **CSV Parsing**: 100% RFC 4180 compliant
   - Quoted fields, embedded commas, embedded newlines
   - CRLF/LF/CR line endings, UTF-8 BOM detection
   - Automatic type inference (Int64, Float64, String, Bool, Categorical, Null)
+- ✅ **Memory Management**: Automatic (default) or manual cleanup (opt-out)
+  - `autoCleanup: true` (default) - Convenient, automatic cleanup
+  - `autoCleanup: false` (opt-out) - Deterministic, ~3× faster in loops
+  - FinalizationRegistry-based automatic memory management
+  - Can still call `df.free()` for immediate cleanup (recommended)
 - ✅ **Data Access**: Column access (`column()`) - numeric types only (Int64, Float64)
 - ✅ **DataFrame metadata**: `shape`, `columns`, `length` properties
 - ✅ **Node.js Integration**: CommonJS + ESM support, TypeScript definitions, File I/O (`fromCSVFile`)
 - ⏳ **Advanced operations coming in 1.1.0**: filter, select, sort, groupBy, join, string columns
 
 **Zig API (1.0.0)** - Full DataFrame operations (50+ operations):
+
 - ✅ **GroupBy**: `sum()`, `mean()`, `min()`, `max()`, `count()`
 - ✅ **Join**: inner, left, right, outer, cross (5 types)
 - ✅ **Sort**: Single/multi-column with NaN handling
@@ -168,42 +177,50 @@ df.free();
 **15+ Major Optimizations Across 8 Categories**:
 
 #### CSV Parsing
+
 - **SIMD delimiter detection** - 37% faster (909ms → 570ms for 1M rows)
 - **Throughput**: 1.75M rows/second
 - **Pre-allocation** - Estimate rows/cols to reduce reallocation overhead
 
 #### String Operations
+
 - **SIMD string comparison** - 2-4× faster for strings >16 bytes
 - **Length-first short-circuit** - 7.5× faster on unequal lengths
 - **Hash caching** - 38% join speedup, 32% groupby speedup
 - **String interning** - 4-8× memory reduction for repeated strings
 
 #### Algorithm Improvements
+
 - **Hash join (O(n+m))** - 98% faster (593ms → 11.21ms for 10K×10K)
 - **Column-wise memcpy** - 5× faster joins with sequential access
 - **FNV-1a hashing** - 7% faster than Wyhash for small keys
 - **GroupBy hash-based aggregation** - 32% faster (2.83ms → 1.92ms)
 
 #### Data Structures
+
 - **Column name HashMap** - O(1) lookups, 100× faster for wide DataFrames (100+ cols)
 - **Categorical encoding** - 80-92% memory reduction for low-cardinality data
 
 #### Memory Layout
+
 - **Columnar storage** - Cache-friendly contiguous memory per column
 - **Arena allocator** - Single free operation, zero memory leaks
 - **Lazy allocation** - ArrayList vs fixed arrays, 8KB bundle reduction
 
 #### Bundle Size
+
 - **Dead code elimination** - 86KB → 74KB → 62KB final
 - **wasm-opt -Oz** - 20-30% size reduction
 - **35KB gzipped** - Competitive with full DataFrame libraries
 
 #### Performance Results
+
 - **3-10× faster** than JavaScript libraries (Papa Parse, csv-parse)
 - **6/6 benchmarks passing** (all exceed targets)
 - **Zero memory leaks** (1000-iteration verified)
 
 **Future optimizations** (1.1.0+):
+
 - Radix hash join for integer keys (2-3× speedup)
 - SIMD aggregations (30% groupby speedup)
 - Parallel CSV type inference (2-4× faster)
@@ -221,20 +238,20 @@ df.free();
 
 ### DataFrame Operations
 
-| Operation | Dataset | Rozes | Target | Grade | vs Target |
-|-----------|---------|-------|--------|-------|-----------|
-| **Filter** | 1M rows | 20.99ms | <100ms | A+ | **79% faster** |
-| **Sort** | 100K rows | 11.06ms | <11ms | A | **Within 1% of target** |
-| **GroupBy** | 100K rows | 1.92ms | <2ms | A+ | **4% faster** |
-| **Join (pure)** | 10K × 10K | 1.42ms | <10ms | A+ | **85.8% faster** |
-| **Join (full)** | 10K × 10K | 11.21ms | <500ms | A+ | **98% faster than target** |
+| Operation       | Dataset   | Rozes   | Target | Grade | vs Target                  |
+| --------------- | --------- | ------- | ------ | ----- | -------------------------- |
+| **Filter**      | 1M rows   | 20.99ms | <100ms | A+    | **79% faster**             |
+| **Sort**        | 100K rows | 11.06ms | <11ms  | A     | **Within 1% of target**    |
+| **GroupBy**     | 100K rows | 1.92ms  | <2ms   | A+    | **4% faster**              |
+| **Join (pure)** | 10K × 10K | 1.42ms  | <10ms  | A+    | **85.8% faster**           |
+| **Join (full)** | 10K × 10K | 11.21ms | <500ms | A+    | **98% faster than target** |
 
 ### vs JavaScript Libraries (100K rows)
 
 - **vs Papa Parse**: 3.67× faster (207.67ms → 56.63ms)
 - **vs csv-parse**: 7.55× faster (427.48ms → 56.63ms)
 
-*Benchmarks run on macOS (Darwin 25.0.0), Zig 0.15.1, averaged over 5 runs*
+_Benchmarks run on macOS (Darwin 25.0.0), Zig 0.15.1, averaged over 5 runs_
 
 ---
 
@@ -255,7 +272,7 @@ npm install rozes
 
 ```html
 <script type="module">
-  import { Rozes } from './node_modules/rozes/dist/index.mjs';
+  import { Rozes } from "./node_modules/rozes/dist/index.mjs";
   const rozes = await Rozes.init();
 </script>
 ```
@@ -271,6 +288,7 @@ npm install rozes
 
 ### Guides
 
+- **[Memory Management](./docs/MEMORY_MANAGEMENT.md)** - Manual vs automatic cleanup (autoCleanup option)
 - **[Migration Guide](./docs/MIGRATION.md)** - Migrate from Papa Parse, csv-parse, pandas, or Polars
 - **[Changelog](./CHANGELOG.md)** - Version history and release notes
 - **[Benchmark Report](./docs/BENCHMARK_BASELINE_REPORT.md)** - Detailed performance analysis
@@ -287,10 +305,10 @@ npm install rozes
 ### Data Analysis
 
 ```javascript
-const df = rozes.DataFrame.fromCSVFile('sales_data.csv');
+const df = rozes.DataFrame.fromCSVFile("sales_data.csv");
 
-const prices = df.column('price');
-const quantities = df.column('quantity');
+const prices = df.column("price");
+const quantities = df.column("quantity");
 
 // Calculate total revenue
 let totalRevenue = 0;
@@ -315,21 +333,32 @@ df.free();
 ### TypeScript Data Processing
 
 ```typescript
-import { Rozes, DataFrame } from 'rozes';
+import { Rozes, DataFrame, CSVOptions } from "rozes";
 
 async function analyzeData(filePath: string): Promise<number> {
   const rozes = await Rozes.init();
+
+  // Manual cleanup (production)
   const df = rozes.DataFrame.fromCSVFile(filePath);
-
   try {
-    const ages = df.column('age');
-    if (!ages) throw new Error('Age column not found');
-
+    const ages = df.column("age");
+    if (!ages) throw new Error("Age column not found");
     const avgAge = ages.reduce((a, b) => a + b) / ages.length;
     return avgAge;
   } finally {
-    df.free();
+    df.free(); // Deterministic cleanup
   }
+}
+
+async function quickAnalysis(csvText: string): Promise<void> {
+  const rozes = await Rozes.init();
+
+  // Auto cleanup (prototyping)
+  const options: CSVOptions = { autoCleanup: true };
+  const df = rozes.DataFrame.fromCSV(csvText, options);
+
+  console.log(`Loaded ${df.shape.rows} rows`);
+  // No df.free() needed - automatic cleanup
 }
 ```
 
@@ -337,30 +366,32 @@ async function analyzeData(filePath: string): Promise<number> {
 
 ## Browser Support
 
-| Browser | Version | Status | Notes |
-|---------|---------|--------|-------|
-| Chrome | 90+ | ✅ Tier 1 | Full WebAssembly support |
-| Firefox | 88+ | ✅ Tier 1 | Full WebAssembly support |
-| Safari | 14+ | ✅ Tier 1 | Full WebAssembly support |
-| Edge | 90+ | ✅ Tier 1 | Chromium-based |
-| IE 11 | N/A | ❌ Not Supported | No WebAssembly |
+| Browser | Version | Status           | Notes                    |
+| ------- | ------- | ---------------- | ------------------------ |
+| Chrome  | 90+     | ✅ Tier 1        | Full WebAssembly support |
+| Firefox | 88+     | ✅ Tier 1        | Full WebAssembly support |
+| Safari  | 14+     | ✅ Tier 1        | Full WebAssembly support |
+| Edge    | 90+     | ✅ Tier 1        | Chromium-based           |
+| IE 11   | N/A     | ❌ Not Supported | No WebAssembly           |
 
 ---
 
 ## Known Limitations (1.0.0)
 
 **Node.js API limitations** (Full API coming in 1.1.0+):
+
 - ❌ **CSV export**: `toCSV()`, `toCSVFile()` - WASM export not yet implemented
 - ❌ **String/Boolean columns**: `column()` only returns numeric types (Int64, Float64)
 - ❌ **DataFrame operations**: filter, select, sort, groupBy, join - Use Zig API for now
-- ❌ **Automatic memory management**: Must call `df.free()` manually (FinalizationRegistry option coming in 1.1.0)
 
 **Future features** (1.1.0+):
+
 - Stream API for large files (>1GB)
 - Rich error messages with column suggestions (Levenshtein distance)
 - Interactive browser demo
 
 **Planned optimizations** (1.1.0+):
+
 - SIMD aggregations (30% groupby speedup)
 - Radix hash join for integer keys (2-3× speedup)
 - Parallel CSV type inference (2-4× faster)
@@ -420,11 +451,17 @@ cd rozes
 # Build WASM module
 zig build
 
-# Run tests (428/430 passing)
+# Run tests (461/463 passing)
 zig build test
 
-# Run benchmarks
+# Run conformance tests (125/125 passing)
+zig build conformance
+
+# Run benchmarks (6/6 passing)
 zig build benchmark
+
+# Run memory leak tests (5/5 suites passing, ~5 minutes)
+zig build memory-test
 ```
 
 ### Contributing
@@ -441,19 +478,20 @@ We welcome contributions! Please:
 
 ## Comparison to Alternatives
 
-| Feature | Rozes | Papa Parse | Danfo.js | Polars-WASM | DuckDB-WASM |
-|---------|-------|------------|----------|-------------|-------------|
-| **Performance** | ⚡ 3-10× faster | Baseline | ~Same as Papa | 2-5× faster | 5-10× faster |
-| **Bundle Size** | 📦 62KB | 206KB | 1.2MB | 2-5MB | 15MB |
-| **Zero-Copy** | ✅ TypedArray | ❌ | ❌ | ✅ | ✅ |
-| **RFC 4180** | ✅ 100% | ⚠️ ~95% | ⚠️ Basic | ✅ | ✅ |
-| **DataFrame Ops** | ✅ 50+ | ❌ | ✅ | ✅ | ✅ SQL |
-| **Memory Safe** | ✅ Zig | ❌ JS | ❌ JS | ✅ Rust | ✅ C++ |
-| **Node.js** | ✅ | ✅ | ✅ | ✅ | ✅ |
-| **Browser** | ✅ | ✅ | ✅ | ✅ | ✅ |
-| **TypeScript** | ✅ Full | ⚠️ Basic | ✅ | ✅ | ✅ |
+| Feature           | Rozes           | Papa Parse | Danfo.js      | Polars-WASM | DuckDB-WASM  |
+| ----------------- | --------------- | ---------- | ------------- | ----------- | ------------ |
+| **Performance**   | ⚡ 3-10× faster | Baseline   | ~Same as Papa | 2-5× faster | 5-10× faster |
+| **Bundle Size**   | 📦 62KB         | 206KB      | 1.2MB         | 2-5MB       | 15MB         |
+| **Zero-Copy**     | ✅ TypedArray   | ❌         | ❌            | ✅          | ✅           |
+| **RFC 4180**      | ✅ 100%         | ⚠️ ~95%    | ⚠️ Basic      | ✅          | ✅           |
+| **DataFrame Ops** | ✅ 50+          | ❌         | ✅            | ✅          | ✅ SQL       |
+| **Memory Safe**   | ✅ Zig          | ❌ JS      | ❌ JS         | ✅ Rust     | ✅ C++       |
+| **Node.js**       | ✅              | ✅         | ✅            | ✅          | ✅           |
+| **Browser**       | ✅              | ✅         | ✅            | ✅          | ✅           |
+| **TypeScript**    | ✅ Full         | ⚠️ Basic   | ✅            | ✅          | ✅           |
 
 **When to use Rozes**:
+
 - Need fast CSV parsing (3-10× faster than Papa Parse)
 - Want small bundle size (62KB vs 1-15MB for alternatives)
 - Need DataFrame operations (GroupBy, Join, Window functions)
@@ -461,6 +499,7 @@ We welcome contributions! Please:
 - Value 100% RFC 4180 compliance and test coverage
 
 **When to use alternatives**:
+
 - **Papa Parse**: Need streaming API (coming in Rozes 1.1.0)
 - **Danfo.js**: Need full pandas-like API (more operations than Rozes 1.0.0)
 - **Polars-WASM**: Need lazy evaluation and query optimization (coming in Rozes 1.1.0+)

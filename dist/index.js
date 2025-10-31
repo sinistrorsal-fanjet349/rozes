@@ -20,7 +20,7 @@ class DataFrameNode extends BrowserDataFrame {
    * Parse CSV string into DataFrame (overridden to return DataFrameNode)
    *
    * @param {string} csvText - CSV data as string
-   * @param {Object} options - Parsing options
+   * @param {Object} options - Parsing options (including autoCleanup)
    * @returns {DataFrameNode}
    */
   static fromCSV(csvText, options = {}) {
@@ -32,6 +32,7 @@ class DataFrameNode extends BrowserDataFrame {
     nodeDf._handle = tempDf._handle;
     nodeDf._wasm = tempDf._wasm;
     nodeDf._freed = tempDf._freed;
+    nodeDf._autoCleanup = tempDf._autoCleanup;
     nodeDf._rows = tempDf._rows;
     nodeDf._cols = tempDf._cols;
     nodeDf._columnNames = tempDf._columnNames;
