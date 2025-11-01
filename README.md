@@ -7,7 +7,7 @@
 [![Zig Version](https://img.shields.io/badge/Zig-0.15+-orange.svg)](https://ziglang.org/)
 
 ```bash
-npm install rozes
+npm install rozes (Please wait for full version)
 ```
 
 ```javascript
