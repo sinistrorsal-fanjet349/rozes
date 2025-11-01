@@ -1,0 +1,23 @@
+{
+  "name": "rozes-time-series-example",
+  "version": "1.0.0",
+  "description": "Time series analysis with rolling windows and resampling using Rozes",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "generate-data": "node generate-sensor-data.js"
+  },
+  "keywords": [
+    "rozes",
+    "dataframe",
+    "time-series",
+    "iot",
+    "sensors"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "rozes": "^1.0.1"
+  }
+}

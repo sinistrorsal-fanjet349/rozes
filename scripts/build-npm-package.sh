@@ -113,7 +113,7 @@ if [ "$HAS_WASM_OPT" = true ]; then
 
     ORIGINAL_SIZE=$WASM_SIZE_KB
 
-    wasm-opt -Oz zig-out/bin/rozes.wasm -o zig-out/bin/rozes_opt.wasm
+    wasm-opt -Oz --enable-bulk-memory zig-out/bin/rozes.wasm -o zig-out/bin/rozes_opt.wasm
 
     # Replace original with optimized
     mv zig-out/bin/rozes_opt.wasm zig-out/bin/rozes.wasm

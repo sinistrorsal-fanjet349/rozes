@@ -6,6 +6,7 @@
  */
 
 import fs from 'fs';
+import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 
@@ -13,101 +14,96 @@ import { dirname, join } from 'path';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-// Import browser API (note: for now, we'll inline the key parts)
-// In production, we'd properly convert rozes.js to ESM
+// Import full browser API from js/rozes.js
+import { Rozes as RozesBrowser, DataFrame as DataFrameBrowser, RozesError } from '../js/rozes.js';
 
 /**
- * Error codes from Wasm module
+ * Node.js-specific Rozes wrapper
+ * Extends browser Rozes with Node.js file I/O capabilities
  */
-const ErrorCode = {
-    Success: 0,
-    OutOfMemory: -1,
-    InvalidFormat: -2,
-    InvalidHandle: -3,
-    ColumnNotFound: -4,
-    TypeMismatch: -5,
-    IndexOutOfBounds: -6,
-    TooManyDataFrames: -7,
-    InvalidOptions: -8,
-};
+export class Rozes extends RozesBrowser {
+    static async init(wasmPath) {
+        if (!wasmPath) {
+            wasmPath = join(__dirname, '../zig-out/bin/rozes.wasm');
+        }
 
-/**
- * Error messages
- */
-const ErrorMessages = {
-    [ErrorCode.OutOfMemory]: 'Out of memory',
-    [ErrorCode.InvalidFormat]: 'Invalid CSV format',
-    [ErrorCode.InvalidHandle]: 'Invalid DataFrame handle',
-    [ErrorCode.ColumnNotFound]: 'Column not found',
-    [ErrorCode.TypeMismatch]: 'Type mismatch - column is not the requested type',
-    [ErrorCode.IndexOutOfBounds]: 'Index out of bounds',
-    [ErrorCode.TooManyDataFrames]: 'Too many DataFrames (max 1000)',
-    [ErrorCode.InvalidOptions]: 'Invalid CSV options',
-};
+        const wasmBuffer = fs.readFileSync(wasmPath);
 
-/**
- * Rozes Error class
- */
-export class RozesError extends Error {
-    constructor(code, message) {
-        const errorMsg = ErrorMessages[code] || `Unknown error (code: ${code})`;
-        super(message ? `${errorMsg}: ${message}` : errorMsg);
-        this.code = code;
-        this.name = 'RozesError';
+        // WASI imports
+        const wasiImports = {
+            wasi_snapshot_preview1: {
+                fd_close: () => 0,
+                fd_write: () => 0,
+                fd_read: () => 0,
+                fd_seek: () => 0,
+                fd_fdstat_get: () => 0,
+                fd_fdstat_set_flags: () => 0,
+                fd_fdstat_set_rights: () => 0,
+                fd_filestat_get: () => 0,
+                fd_filestat_set_size: () => 0,
+                fd_filestat_set_times: () => 0,
+                fd_prestat_get: () => 0,
+                fd_prestat_dir_name: () => 0,
+                fd_pread: () => 0,
+                fd_pwrite: () => 0,
+                fd_readdir: () => 0,
+                fd_renumber: () => 0,
+                fd_sync: () => 0,
+                fd_tell: () => 0,
+                fd_advise: () => 0,
+                fd_allocate: () => 0,
+                fd_datasync: () => 0,
+                path_create_directory: () => 0,
+                path_filestat_get: () => 0,
+                path_filestat_set_times: () => 0,
+                path_link: () => 0,
+                path_open: () => 0,
+                path_readlink: () => 0,
+                path_remove_directory: () => 0,
+                path_rename: () => 0,
+                path_symlink: () => 0,
+                path_unlink_file: () => 0,
+                environ_sizes_get: () => 0,
+                environ_get: () => 0,
+                args_sizes_get: () => 0,
+                args_get: () => 0,
+                proc_exit: (code) => process.exit(code),
+                proc_raise: () => 0,
+                sched_yield: () => 0,
+                random_get: (buf, len) => {
+                    const bytes = new Uint8Array(len);
+                    crypto.randomFillSync(bytes);
+                    return 0;
+                },
+                clock_res_get: () => 0,
+                clock_time_get: () => 0,
+                poll_oneoff: () => 0,
+                sock_recv: () => 0,
+                sock_send: () => 0,
+                sock_shutdown: () => 0
+            }
+        };
+
+        const wasmModule = await WebAssembly.instantiate(wasmBuffer, wasiImports);
+
+        const wasm = {
+            instance: wasmModule.instance,
+            memory: wasmModule.instance.exports.memory
+        };
+
+        DataFrameBrowser._wasm = wasm;
+
+        const instance = new Rozes(wasm);
+        instance.DataFrame = DataFrame;
+        return instance;
     }
 }
 
 /**
- * Check Wasm function result
+ * Node.js-specific DataFrame class
+ * Extends browser DataFrame with file I/O methods
  */
-function checkResult(code, context = '') {
-    if (code < 0) {
-        throw new RozesError(code, context);
-    }
-    return code;
-}
-
-/**
- * DataFrame class (simplified for Node.js)
- *
- * For full implementation, see js/rozes.js
- * This is a minimal version for Node.js with file I/O
- */
-export class DataFrame {
-    constructor(handle, wasm) {
-        this._handle = handle;
-        this._wasm = wasm;
-        this._freed = false;
-    }
-
-    /**
-     * Parse CSV string into DataFrame
-     */
-    static fromCSV(csvText, options = {}) {
-        const wasm = DataFrame._wasm;
-        if (!wasm) {
-            throw new Error('Rozes not initialized. Call Rozes.init() first.');
-        }
-
-        const csvBytes = new TextEncoder().encode(csvText);
-        const csvPtr = wasm.instance.exports.rozes_alloc(csvBytes.length);
-        if (csvPtr === 0) {
-            throw new RozesError(ErrorCode.OutOfMemory, 'Failed to allocate CSV buffer');
-        }
-
-        try {
-            const csvArray = new Uint8Array(wasm.memory.buffer, csvPtr, csvBytes.length);
-            csvArray.set(csvBytes);
-
-            const handle = wasm.instance.exports.rozes_parseCSV(csvPtr, csvBytes.length, 0, 0);
-            checkResult(handle, 'Failed to parse CSV');
-
-            return new DataFrame(handle, wasm);
-        } finally {
-            wasm.instance.exports.rozes_free_buffer(csvPtr, csvBytes.length);
-        }
-    }
-
+export class DataFrame extends DataFrameBrowser {
     /**
      * Load CSV from file (Node.js only)
      */
@@ -123,60 +119,10 @@ export class DataFrame {
         const csvText = this.toCSV(options);
         fs.writeFileSync(filePath, csvText, 'utf-8');
     }
-
-    /**
-     * Get DataFrame dimensions
-     */
-    get shape() {
-        if (this._freed) throw new Error('DataFrame has been freed');
-        // Implementation similar to browser version
-        // For now, return placeholder
-        return { rows: 0, cols: 0 };
-    }
-
-    /**
-     * Free DataFrame memory
-     */
-    free() {
-        if (this._freed) return;
-        this._wasm.instance.exports.rozes_free(this._handle);
-        this._freed = true;
-    }
 }
 
-/**
- * Rozes main class
- */
-export class Rozes {
-    static async init(wasmPath) {
-        if (!wasmPath) {
-            wasmPath = join(__dirname, '../zig-out/bin/rozes.wasm');
-        }
-
-        const wasmBuffer = fs.readFileSync(wasmPath);
-        const wasmModule = await WebAssembly.instantiate(wasmBuffer, {});
-
-        const wasm = {
-            instance: wasmModule.instance,
-            memory: wasmModule.instance.exports.memory
-        };
-
-        DataFrame._wasm = wasm;
-
-        const instance = new Rozes(wasm);
-        instance.DataFrame = DataFrame;
-        return instance;
-    }
-
-    constructor(wasm) {
-        this._wasm = wasm;
-        this.DataFrame = DataFrame;
-    }
-
-    get version() {
-        return '1.0.0';
-    }
-}
+// Export RozesError
+export { RozesError };
 
 // Default export
 export default Rozes;

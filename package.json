@@ -1,7 +1,8 @@
 {
   "name": "rozes",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "High-performance DataFrame library powered by WebAssembly - 3-10× faster than Papa Parse",
+  "type": "module",
   "main": "dist/index.js",
   "module": "dist/index.mjs",
   "types": "dist/index.d.ts",
@@ -14,6 +15,7 @@
   },
   "files": [
     "dist/",
+    "js/",
     "zig-out/bin/rozes.wasm",
     "README.md",
     "LICENSE"
@@ -23,6 +25,7 @@
     "build:wasm": "zig build -Doptimize=ReleaseSmall",
     "test": "zig build test",
     "test:node": "node examples/node/basic.js",
+    "test:api": "node src/test/nodejs/basic_api.test.js",
     "benchmark": "zig build benchmark",
     "benchmark:js": "node src/test/benchmark/compare_js.js"
   },

@@ -20,8 +20,6 @@ const df = rozes.DataFrame.fromCSV(
 
 console.log(df.shape); // { rows: 2, cols: 3 }
 const ages = df.column("age"); // Float64Array [30, 25] - zero-copy!
-
-// Memory freed automatically via FinalizationRegistry
 ```
 
 ---
@@ -41,15 +39,21 @@ const ages = df.column("age"); // Float64Array [30, 25] - zero-copy!
 | SIMD Mean 200K rows  | **0.04ms**  | ~6ms       | N/A       | **150×**       |
 | Radix Join 100K×100K | **5.29ms**  | N/A        | N/A       | N/A            |
 
-### 📦 **Tiny Bundle** - 95-99% Smaller
+### 📦 **Tiny Bundle** - 94-99% Smaller
 
 | Library     | Bundle Size | Gzipped  | vs Rozes          |
 | ----------- | ----------- | -------- | ----------------- |
-| **Rozes**   | **62KB**    | **35KB** | **1×**            |
-| Papa Parse  | 206KB       | 57KB     | 3.3× larger       |
-| Danfo.js    | 1.2MB       | ~400KB   | **19× larger**    |
-| Polars-WASM | 2-5MB       | ~1MB     | **32-81× larger** |
-| DuckDB-WASM | 15MB        | ~5MB     | **242× larger**   |
+| **Rozes**   | **103KB**   | **52KB** | **1×**            |
+| Papa Parse  | 206KB       | 57KB     | 2.0× larger       |
+| Danfo.js    | 1.2MB       | ~400KB   | **12× larger**    |
+| Polars-WASM | 2-5MB       | ~1MB     | **19-49× larger** |
+| DuckDB-WASM | 15MB        | ~5MB     | **146× larger**   |
+
+**Future Package Sizes (v1.3.0)**:
+
+- `rozes/csv` (CSV-only): 40KB gzipped
+- `rozes` (universal): 120KB gzipped
+- `rozes/web` (with WebGPU): 180KB gzipped
 
 ### ✅ **Production-Ready** - Tested & Reliable
 
@@ -70,10 +74,11 @@ npm install rozes
 ```
 
 **Requirements**:
+
 - Node.js 14+ (LTS versions recommended)
 - No native dependencies (pure WASM)
 
-### Zig
+### Zig (Coming Soon)
 
 Add to your `build.zig.zon`:
 
@@ -97,6 +102,7 @@ exe.root_module.addImport("rozes", rozes.module("rozes"));
 ```
 
 **Requirements**:
+
 - Zig 0.15.1+
 
 ---
@@ -112,7 +118,6 @@ const rozes = await Rozes.init();
 const df = rozes.DataFrame.fromCSV(csvText);
 
 console.log(df.shape);
-// Memory automatically managed
 ```
 
 ### TypeScript
@@ -167,7 +172,6 @@ pub fn main() !void {
       const df = rozes.DataFrame.fromCSV(csvText);
 
       console.log(df.shape);
-      // Memory automatically managed
     </script>
   </head>
 </html>
@@ -177,24 +181,120 @@ pub fn main() !void {
 
 ## API Examples
 
-### JavaScript/TypeScript API (1.0.0)
+### JavaScript/TypeScript API (1.2.0)
+
+Rozes provides a comprehensive DataFrame API for Node.js and browser environments through WebAssembly bindings.
+
+#### CSV Parsing & I/O
 
 ```javascript
-// CSV Parsing
-const df = rozes.DataFrame.fromCSV("name,age\nAlice,30");
+// Parse CSV from string
+const df = rozes.DataFrame.fromCSV(
+  "name,age,score\nAlice,30,95.5\nBob,25,87.3"
+);
+
+// Parse CSV from file (Node.js only)
 const df2 = rozes.DataFrame.fromCSVFile("data.csv");
-
-// Data Access
-df.shape;              // { rows: 1, cols: 2 }
-df.columns;            // ["name", "age"]
-df.length;             // 1
-df.column("age");      // Float64Array [30] - zero-copy!
-
-// Memory Management: Automatic via FinalizationRegistry
-// No manual cleanup needed!
 ```
 
-### Zig API (1.0.0) - 50+ Operations
+#### DataFrame Properties
+
+```javascript
+// Shape and metadata
+df.shape; // { rows: 2, cols: 3 }
+df.columns; // ["name", "age", "score"]
+df.length; // 2
+```
+
+#### Column Access (Zero-Copy)
+
+```javascript
+// Numeric columns - returns TypedArray (zero-copy!)
+const ages = df.column("age"); // Float64Array [30, 25]
+const scores = df.column("score"); // Float64Array [95.5, 87.3]
+
+// String columns - returns array of strings
+const names = df.column("name"); // ["Alice", "Bob"]
+
+// Boolean columns - returns Uint8Array (0 = false, 1 = true)
+const active = df.column("is_active"); // Uint8Array [1, 0]
+```
+
+#### DataFrame Operations
+
+```javascript
+// Select columns
+const subset = df.select(["name", "age"]);
+
+// Head and tail
+const first5 = df.head(5);
+const last5 = df.tail(5);
+
+// Sort
+const sorted = df.sort("age", false); // ascending
+const descending = df.sort("score", true); // descending
+```
+
+#### SIMD Aggregations (NEW in 1.2.0)
+
+**Blazing-fast statistical functions with SIMD acceleration (2-6 billion rows/sec)**
+
+```javascript
+// Sum - 4.48 billion rows/sec
+const totalScore = df.sum("score"); // 182.8
+
+// Mean - 4.46 billion rows/sec
+const avgAge = df.mean("age"); // 27.5
+
+// Min/Max - 6.5-6.7 billion rows/sec
+const minAge = df.min("age"); // 25
+const maxScore = df.max("score"); // 95.5
+
+// Variance and Standard Deviation
+const variance = df.variance("score");
+const stddev = df.stddev("score");
+
+// Note: SIMD automatically used on x86_64 with AVX2, falls back to scalar on other platforms
+```
+
+#### Memory Management
+
+```javascript
+const df = rozes.DataFrame.fromCSV(largeCSV);
+console.log(df.shape);
+```
+
+#### Full TypeScript Support
+
+```typescript
+import { Rozes, DataFrame } from "rozes";
+
+const rozes: Rozes = await Rozes.init();
+const df: DataFrame = rozes.DataFrame.fromCSV(csvText);
+
+// Full autocomplete and type checking
+const shape: { rows: number; cols: number } = df.shape;
+const columns: string[] = df.columns;
+const ages: Float64Array | Int32Array | null = df.column("age");
+const total: number = df.sum("price");
+```
+
+#### API Summary (1.2.0)
+
+| Category                | Methods                                                       | Status               |
+| ----------------------- | ------------------------------------------------------------- | -------------------- |
+| **CSV I/O**             | `fromCSV()`, `fromCSVFile()`                                  | ✅ Available         |
+| **Properties**          | `shape`, `columns`, `length`                                  | ✅ Available         |
+| **Column Access**       | `column()` - numeric, string, boolean                         | ✅ Available         |
+| **Selection**           | `select()`, `head()`, `tail()`                                | ✅ Available         |
+| **Sorting**             | `sort()`                                                      | ✅ Available         |
+| **SIMD Aggregations**   | `sum()`, `mean()`, `min()`, `max()`, `variance()`, `stddev()` | ✅ Available (1.2.0) |
+| **Advanced Operations** | `filter()`, `groupBy()`, `join()`                             | ⏳ Coming in 1.3.0   |
+| **CSV Export**          | `toCSV()`, `toCSVFile()`                                      | ⏳ Coming in 1.3.0   |
+
+---
+
+### Zig API (1.2.0) - 50+ Operations
 
 ```zig
 // CSV I/O
@@ -275,24 +375,32 @@ const endsWith = try df.strEndsWith("name", "e");
 
 ## Features
 
-### Core DataFrame Engine (1.0.0)
+### Core DataFrame Engine (1.2.0)
 
-**Node.js/Browser API (1.0.0)** - Basic CSV parsing:
+**Node.js/Browser API (1.2.0)** - Production-ready DataFrame library:
 
 - ✅ **CSV Parsing**: 100% RFC 4180 compliant
   - Quoted fields, embedded commas, embedded newlines
   - CRLF/LF/CR line endings, UTF-8 BOM detection
   - Automatic type inference (Int64, Float64, String, Bool, Categorical, Null)
+  - Parallel CSV parsing: 1.73M rows/second (1M rows in 578ms)
 - ✅ **Memory Management**: Fully automatic via FinalizationRegistry
   - Garbage collector handles cleanup automatically
   - No manual `free()` calls required
   - Works in Node.js 14.6+ and modern browsers (Chrome 84+, Firefox 79+, Safari 14.1+)
-- ✅ **Data Access**: Column access (`column()`) - numeric types only (Int64, Float64)
+- ✅ **Data Access**: Column access (`column()`) - all types supported
+  - Numeric types (Int64, Float64) → TypedArray (zero-copy)
+  - String columns → Array of strings
+  - Boolean columns → Uint8Array
+- ✅ **DataFrame Operations**:
+  - Selection: `select()`, `head()`, `tail()`
+  - Sorting: `sort()` (single column, ascending/descending)
+  - SIMD Aggregations: `sum()`, `mean()`, `min()`, `max()`, `variance()`, `stddev()`
 - ✅ **DataFrame metadata**: `shape`, `columns`, `length` properties
 - ✅ **Node.js Integration**: CommonJS + ESM support, TypeScript definitions, File I/O (`fromCSVFile`)
-- ⏳ **Advanced operations coming in 1.1.0**: filter, select, sort, groupBy, join, string columns
+- ⏳ **Advanced operations coming in 1.3.0**: `filter()`, `groupBy()`, `join()`, `toCSV()`
 
-**Zig API (1.0.0)** - Full DataFrame operations (50+ operations):
+**Zig API (1.2.0)** - Full DataFrame operations (50+ operations):
 
 - ✅ **GroupBy**: `sum()`, `mean()`, `min()`, `max()`, `count()`
 - ✅ **Join**: inner, left, right, outer, cross (5 types)
@@ -400,23 +508,23 @@ const endsWith = try df.strEndsWith("name", "e");
 
 ### DataFrame Operations
 
-| Operation                     | Dataset    | Rozes    | Target  | Grade | vs Target              |
-| ----------------------------- | ---------- | -------- | ------- | ----- | ---------------------- |
-| **CSV Parse**                 | 1M rows    | 578ms    | <3000ms | A+    | **81% faster**         |
-| **Filter**                    | 1M rows    | 13.11ms  | <100ms  | A+    | **87% faster**         |
-| **Sort**                      | 100K rows  | 6.11ms   | <100ms  | A+    | **94% faster**         |
-| **GroupBy**                   | 100K rows  | 1.76ms   | <300ms  | A+    | **99% faster!**        |
-| **Join (pure algorithm)**     | 10K × 10K  | 0.44ms   | <10ms   | A+    | **96% faster**         |
-| **Join (full pipeline)**      | 10K × 10K  | 588.56ms | <500ms  | A     | **18% slower**         |
-| **SIMD Sum**                  | 200K rows  | 0.04ms   | <1ms    | A+    | **96% faster**         |
-| **SIMD Mean**                 | 200K rows  | 0.04ms   | <2ms    | A+    | **98% faster**         |
-| **SIMD Min/Max**              | 200K rows  | 0.03ms   | <1ms    | A+    | **97% faster**         |
-| **SIMD Variance**             | 200K rows  | 0.09ms   | <3ms    | A+    | **97% faster**         |
-| **Radix Join SIMD Probe**     | 10K rows   | 0.07ms   | <0.5ms  | A+    | **85% faster**         |
-| **Bloom Filter Rejection**    | 10K probes | 0.01ms   | <0.2ms  | A+    | **95% faster**         |
-| **Radix vs Standard Join**    | 100K×100K  | 5.29ms   | N/A     | N/A   | **1.65× speedup**      |
-| **Head**                      | 100K rows  | 0.01ms   | N/A     | A+    | **14B rows/sec**       |
-| **DropDuplicates**            | 100K rows  | 656ms    | N/A     | N/A   | **152K rows/sec**      |
+| Operation                  | Dataset    | Rozes    | Target  | Grade | vs Target         |
+| -------------------------- | ---------- | -------- | ------- | ----- | ----------------- |
+| **CSV Parse**              | 1M rows    | 578ms    | <3000ms | A+    | **81% faster**    |
+| **Filter**                 | 1M rows    | 13.11ms  | <100ms  | A+    | **87% faster**    |
+| **Sort**                   | 100K rows  | 6.11ms   | <100ms  | A+    | **94% faster**    |
+| **GroupBy**                | 100K rows  | 1.76ms   | <300ms  | A+    | **99% faster!**   |
+| **Join (pure algorithm)**  | 10K × 10K  | 0.44ms   | <10ms   | A+    | **96% faster**    |
+| **Join (full pipeline)**   | 10K × 10K  | 588.56ms | <500ms  | A     | **18% slower**    |
+| **SIMD Sum**               | 200K rows  | 0.04ms   | <1ms    | A+    | **96% faster**    |
+| **SIMD Mean**              | 200K rows  | 0.04ms   | <2ms    | A+    | **98% faster**    |
+| **SIMD Min/Max**           | 200K rows  | 0.03ms   | <1ms    | A+    | **97% faster**    |
+| **SIMD Variance**          | 200K rows  | 0.09ms   | <3ms    | A+    | **97% faster**    |
+| **Radix Join SIMD Probe**  | 10K rows   | 0.07ms   | <0.5ms  | A+    | **85% faster**    |
+| **Bloom Filter Rejection** | 10K probes | 0.01ms   | <0.2ms  | A+    | **95% faster**    |
+| **Radix vs Standard Join** | 100K×100K  | 5.29ms   | N/A     | N/A   | **1.65× speedup** |
+| **Head**                   | 100K rows  | 0.01ms   | N/A     | A+    | **14B rows/sec**  |
+| **DropDuplicates**         | 100K rows  | 656ms    | N/A     | N/A   | **152K rows/sec** |
 
 ### SIMD Throughput (Milestone 1.2.0)
 
@@ -465,65 +573,6 @@ _Benchmarks run on macOS (Darwin 25.0.0), Zig 0.15.1, ReleaseFast mode, averaged
 
 ---
 
-## Use Cases
-
-### Data Analysis
-
-```javascript
-const df = rozes.DataFrame.fromCSVFile("sales_data.csv");
-
-const prices = df.column("price");
-const quantities = df.column("quantity");
-
-// Calculate total revenue
-let totalRevenue = 0;
-for (let i = 0; i < prices.length; i++) {
-  totalRevenue += prices[i] * Number(quantities[i]);
-}
-
-console.log(`Total Revenue: $${totalRevenue.toFixed(2)}`);
-// Memory automatically cleaned up
-```
-
-### High-Performance CSV Parsing
-
-```javascript
-// Parse 1M rows in ~570ms (3-10× faster than Papa Parse)
-const df = rozes.DataFrame.fromCSV(largeCSV);
-console.log(`Loaded ${df.shape.rows.toLocaleString()} rows`);
-// Memory automatically cleaned up
-```
-
-### TypeScript Data Processing
-
-```typescript
-import { Rozes, DataFrame } from "rozes";
-
-async function analyzeData(filePath: string): Promise<number> {
-  const rozes = await Rozes.init();
-  const df = rozes.DataFrame.fromCSVFile(filePath);
-
-  const ages = df.column("age");
-  if (!ages) throw new Error("Age column not found");
-
-  const avgAge = ages.reduce((a, b) => a + b) / ages.length;
-  return avgAge;
-  // Memory automatically cleaned up when df goes out of scope
-}
-
-async function processMultipleFiles(files: string[]): Promise<void> {
-  const rozes = await Rozes.init();
-
-  for (const file of files) {
-    const df = rozes.DataFrame.fromCSVFile(file);
-    console.log(`${file}: ${df.shape.rows} rows`);
-    // Each DataFrame is automatically cleaned up at end of iteration
-  }
-}
-```
-
----
-
 ## Browser Support
 
 | Browser | Version | Status           | Notes                    |
@@ -538,12 +587,19 @@ async function processMultipleFiles(files: string[]): Promise<void> {
 
 ## Known Limitations (1.2.0)
 
-**Node.js API limitations** (Full API coming in future releases):
+**Node.js API limitations** (coming in future releases):
 
 - ❌ **CSV export**: `toCSV()`, `toCSVFile()` - WASM export not yet implemented
-- ❌ **String/Boolean columns**: `column()` only returns numeric types (Int64, Float64)
-- ❌ **DataFrame operations**: filter, select, sort, groupBy, join - Use Zig API for now
+- ❌ **Advanced DataFrame operations**: `filter()`, `groupBy()`, `join()` - Use Zig API for now
 - ⚠️ **Lazy evaluation**: LazyDataFrame API implemented in Zig but not yet exposed to Node.js
+- ⚠️ **Multi-column sort**: Currently supports single column only (multi-column available in Zig)
+
+**What's Available** (1.2.0):
+
+- ✅ **CSV Parsing**: `fromCSV()`, `fromCSVFile()` - Fully implemented with parallel parsing
+- ✅ **Column Access**: `column()` - All types (Int64, Float64, String, Bool) supported
+- ✅ **Basic Operations**: `select()`, `head()`, `tail()`, `sort()` - Fully functional
+- ✅ **SIMD Aggregations**: `sum()`, `mean()`, `min()`, `max()`, `variance()`, `stddev()` - Production ready
 
 **Future features** (1.3.0+):
 
@@ -625,6 +681,9 @@ zig build benchmark
 
 # Run memory leak tests (5/5 suites passing, ~5 minutes)
 zig build memory-test
+
+# Run nodejs tests
+ npm run test:api
 ```
 
 ### Contributing
@@ -656,7 +715,7 @@ We welcome contributions! Please:
 **When to use Rozes**:
 
 - Need fast CSV parsing (3-10× faster than Papa Parse)
-- Want small bundle size (62KB vs 1-15MB for alternatives)
+- Want small bundle size (103KB vs 1-15MB for alternatives)
 - Need DataFrame operations (GroupBy, Join, Window functions)
 - Want zero-copy performance with TypedArray access
 - Value 100% RFC 4180 compliance and test coverage

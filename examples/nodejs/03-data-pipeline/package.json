@@ -1,0 +1,23 @@
+{
+  "name": "rozes-data-pipeline-example",
+  "version": "1.0.0",
+  "description": "ETL data processing pipeline with joins, transformations, and validation",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "generate-data": "node generate-etl-data.js"
+  },
+  "keywords": [
+    "rozes",
+    "dataframe",
+    "etl",
+    "pipeline",
+    "data-processing"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "rozes": "^1.0.1"
+  }
+}

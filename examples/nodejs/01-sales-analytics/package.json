@@ -1,0 +1,23 @@
+{
+  "name": "rozes-sales-analytics-example",
+  "version": "1.0.0",
+  "description": "Sales data analytics and reporting using Rozes DataFrame",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "test": "node test.js",
+    "generate-data": "node generate-sample-data.js"
+  },
+  "keywords": [
+    "rozes",
+    "dataframe",
+    "analytics",
+    "sales"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "rozes": "^1.0.1"
+  }
+}

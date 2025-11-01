@@ -61,6 +61,8 @@ Rozes is a DataFrame library written in Zig that provides:
 ### Implementation Guides
 
 - **[src/CLAUDE.md](./src/CLAUDE.md)** - Source code organization and implementation patterns
+- **[docs/BRANCH_NAMING_GUIDE.md](./docs/BRANCH_NAMING_GUIDE.md)** - Git branch naming quick reference
+- **[docs/GIT_BRANCH_NAMING_RESEARCH.md](./docs/GIT_BRANCH_NAMING_RESEARCH.md)** - Comprehensive branch naming research
 - **docs/ARCHITECTURE.md** (to be created) - System design and module structure
 - **docs/CONTRIBUTING.md** (to be created) - Development workflow and PR process
 
@@ -622,6 +624,71 @@ open http://localhost:8080/test/browser/
 - ✅ Pass all tests on Chrome 90+, Firefox 88+, Safari 14+, Edge 90+
 - ✅ No crashes or hangs on large datasets
 - ✅ Consistent results across browsers
+
+---
+
+## Git Branch Naming Convention
+
+Rozes uses a **milestone-based naming convention** derived from GitHub Flow with performance and experiment extensions.
+
+### Quick Reference
+
+```bash
+feature/m<version>-<description>    # New features
+fix/<module>-<description>          # Bug fixes
+perf/<area>-<optimization>          # Performance improvements
+experiment/<hypothesis>-<approach>  # Research/experimentation
+refactor/<module>-<purpose>         # Code restructuring
+docs/<topic>                        # Documentation
+test/<type>-<area>                  # Tests/benchmarks
+chore/<task>                        # Maintenance
+release/v<version>                  # Release preparation
+```
+
+### Examples for Milestone 1.3.0
+
+```bash
+# Features
+feature/m1.3-webgpu-aggregations
+feature/m1.3-package-exports
+feature/m1.3-gpu-filter
+
+# Performance
+perf/m1.3-workgroup-tuning
+perf/m1.3-shader-compilation-cache
+
+# Experiments
+experiment/gpu-groupby-radix-hash
+experiment/webgpu-vs-simd-performance
+
+# Bug Fixes
+fix/m1.3-webgpu-memory-leak
+fix/csv-utf8-bom
+
+# Documentation
+docs/m1.3-webgpu-guide
+docs/package-exports
+```
+
+### Naming Rules
+
+**DO**:
+- ✅ Use lowercase only: `feature/webgpu-aggregations`
+- ✅ Use hyphens as separators: `fix/csv-utf8-bom`
+- ✅ Include milestone for features: `feature/m1.3-gpu-filter`
+- ✅ Be specific: `perf/simd-filter-avx2`
+- ✅ Keep concise: Max 60 characters
+
+**DON'T**:
+- ❌ No uppercase: `Feature/WebGPU`
+- ❌ No underscores: `feature/webgpu_aggregations`
+- ❌ No abbreviations in prefix: `feat/webgpu` (use `feature/`)
+- ❌ Not too vague: `feature/stuff`
+- ❌ Not too verbose: `feature/milestone-1.3.0-webgpu-acceleration-phase-1`
+
+### Detailed Guide
+
+See **[docs/BRANCH_NAMING_GUIDE.md](./docs/BRANCH_NAMING_GUIDE.md)** for quick reference and **[docs/GIT_BRANCH_NAMING_RESEARCH.md](./docs/GIT_BRANCH_NAMING_RESEARCH.md)** for comprehensive research and rationale.
 
 ---
 

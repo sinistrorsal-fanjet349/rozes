@@ -51,7 +51,8 @@ async function test2_initialization() {
 async function test3_wasmLocation() {
   printSection('Test 3: WASM Module Location');
   try {
-    const packageDir = path.dirname(require.resolve('rozes'));
+    const entryPointPath = require.resolve('rozes');
+    const packageDir = path.dirname(path.dirname(entryPointPath)); // Go up from dist/ to package root
     console.log(`Package directory: ${packageDir}`);
 
     // Check for WASM module
@@ -270,18 +271,30 @@ async function test10_errorHandling() {
     const { Rozes } = require('rozes');
     const rozes = await Rozes.init();
 
-    // Test invalid CSV
+    // Test non-existent column (should return null, not throw)
+    const df = rozes.DataFrame.fromCSV('name,age\nAlice,30');
+    const result = df.column('nonexistent');
+
+    if (result !== null) {
+      console.log('✗ Error handling failed (expected null for non-existent column)');
+      return { name: 'Error Handling', passed: false, error: 'Expected null' };
+    }
+
+    console.log(`✓ Non-existent column correctly returns null`);
+
+    // Test accessing freed DataFrame (should throw)
     let errorCaught = false;
     try {
-      const df = rozes.DataFrame.fromCSV('invalid\ncsv\nformat');
-      df.column('nonexistent');
+      const df2 = rozes.DataFrame.fromCSV('name,age\nBob,25', { autoCleanup: false });
+      df2.free();
+      df2.shape; // Should throw
     } catch (e) {
-      console.log(`✓ Invalid column access correctly throws error`);
+      console.log(`✓ Accessing freed DataFrame correctly throws error`);
       errorCaught = true;
     }
 
     if (!errorCaught) {
-      console.log('✗ Error handling failed (no error thrown)');
+      console.log('✗ Error handling failed (no error thrown for freed DataFrame)');
       return { name: 'Error Handling', passed: false, error: 'No error thrown' };
     }
 

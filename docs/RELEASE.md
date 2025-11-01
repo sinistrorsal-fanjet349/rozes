@@ -269,9 +269,168 @@ npm dist-tag ls rozes
 
 ---
 
-## Phase 2: GitHub Release
+## Phase 2: Zig Package Distribution
 
-### 2.1 Create Git Tag
+**Note**: Zig does not have a centralized package registry like npm. Instead, packages are distributed via Git repositories with proper `build.zig.zon` configuration.
+
+### 2.1 Verify build.zig.zon Configuration
+
+Ensure your `build.zig.zon` file is properly configured for package consumers:
+
+```bash
+# Check build.zig.zon exists and has required fields
+cat build.zig.zon
+
+# Required fields:
+# - .name: Package name (e.g., "rozes")
+# - .version: SemVer version (e.g., "1.2.0")
+# - .paths: Files/directories to include in package
+# - .dependencies: External dependencies (if any)
+```
+
+**Example build.zig.zon**:
+
+```zig
+.{
+    .name = "rozes",
+    .version = "1.2.0",
+    .paths = .{
+        "src",
+        "build.zig",
+        "build.zig.zon",
+        "README.md",
+        "LICENSE",
+    },
+    .dependencies = .{
+        // Rozes has zero dependencies (only Zig stdlib)
+    },
+}
+```
+
+### 2.2 Verify build.zig Exports Module
+
+Ensure your `build.zig` properly exposes Rozes as a module for downstream consumers:
+
+```bash
+# Check that build.zig creates a module export
+grep -A 5 "addModule" build.zig
+
+# Should see something like:
+# const rozes_module = b.addModule("rozes", .{
+#     .root_source_file = b.path("src/rozes.zig"),
+# });
+```
+
+### 2.3 Make Package Discoverable
+
+Add GitHub topic to your repository for package aggregators:
+
+1. Go to your GitHub repository
+2. Click "About" (gear icon)
+3. Add topics: `zig-package`, `zig-library`, `dataframe`, `csv-parser`, `webassembly`
+4. Save
+
+**Package aggregators will automatically index your package**:
+- [Astrolabe](https://astrolabe.pm/) - Zig package search
+- [Aquila](https://aquila.red/) - Zig package registry
+- [zig.pm](https://zig.pm/) - Community package index
+
+### 2.4 Test Package Installation (Before Release)
+
+Verify that consumers can install your package:
+
+```bash
+# Create test project
+mkdir -p /tmp/rozes-zig-test
+cd /tmp/rozes-zig-test
+
+# Initialize Zig project
+zig init
+
+# Add Rozes as dependency
+cat > build.zig.zon << EOF
+.{
+    .name = "test",
+    .version = "0.0.1",
+    .dependencies = .{
+        .rozes = .{
+            .url = "https://github.com/yourusername/rozes/archive/refs/heads/main.tar.gz",
+            .hash = "12200000000000000000000000000000000000000000000000000000000000000000",
+        },
+    },
+    .paths = .{""},
+}
+EOF
+
+# Fetch package (Zig will compute correct hash)
+zig fetch --save https://github.com/yourusername/rozes/archive/refs/heads/main.tar.gz
+# Copy the correct hash from error message and update build.zig.zon
+
+# Update build.zig to use Rozes
+cat > build.zig << 'EOF'
+const std = @import("std");
+
+pub fn build(b: *std.Build) void {
+    const target = b.standardTargetOptions(.{});
+    const optimize = b.standardOptimizeOption(.{});
+
+    const rozes = b.dependency("rozes", .{
+        .target = target,
+        .optimize = optimize,
+    });
+
+    const exe = b.addExecutable(.{
+        .name = "test",
+        .root_source_file = b.path("src/main.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    exe.root_module.addImport("rozes", rozes.module("rozes"));
+    b.installArtifact(exe);
+}
+EOF
+
+# Create test code
+cat > src/main.zig << 'EOF'
+const std = @import("std");
+const DataFrame = @import("rozes").DataFrame;
+
+pub fn main() !void {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    const csv = "name,age\nAlice,30\nBob,25\n";
+    var df = try DataFrame.fromCSVBuffer(allocator, csv, .{});
+    defer df.deinit();
+
+    std.debug.print("✅ Zig package test passed: {} rows, {} cols\n", .{
+        df.row_count,
+        df.columns.len,
+    });
+}
+EOF
+
+# Build and run
+zig build run
+# Expected: "✅ Zig package test passed: 2 rows, 2 cols"
+
+# Cleanup
+cd /path/to/rozes
+rm -rf /tmp/rozes-zig-test
+```
+
+**If test fails**:
+- Verify `build.zig` exports module correctly
+- Check `build.zig.zon` paths include all necessary files
+- Ensure Git repository is public and accessible
+
+---
+
+## Phase 3: GitHub Release
+
+### 3.1 Create Git Tag
 
 ```bash
 # Create annotated tag
@@ -284,7 +443,7 @@ git tag -a v1.2.0 -m "Release 1.2.0 - Advanced Optimizations (SIMD, Radix Join, 
 git push origin v{version}
 ```
 
-### 2.2 Create GitHub Release
+### 3.2 Create GitHub Release
 
 Go to https://github.com/yourusername/rozes/releases/new and:
 
@@ -388,9 +547,9 @@ Built with Zig 0.15.1+ following Tiger Style principles.
 
 ---
 
-## Phase 3: Post-Release Tasks
+## Phase 4: Post-Release Tasks
 
-### 3.1 Update Documentation Sites
+### 4.1 Update Documentation Sites
 
 If you have a documentation site (e.g., GitHub Pages):
 
@@ -399,7 +558,7 @@ If you have a documentation site (e.g., GitHub Pages):
 3. Verify all examples work with new version
 4. Update API reference if changes were made
 
-### 3.2 Announce Release
+### 4.2 Announce Release
 
 Post announcements on:
 
@@ -430,7 +589,7 @@ Docs: {link}
 Changelog: {link}
 ```
 
-### 3.3 Monitor Initial Feedback
+### 4.3 Monitor Initial Feedback
 
 For the first 48 hours after release:
 
@@ -440,7 +599,7 @@ For the first 48 hours after release:
 - [ ] Respond to user questions promptly
 - [ ] Monitor bundle size in the wild (bundlephobia.com)
 
-### 3.4 Prepare Hotfix Plan
+### 4.4 Prepare Hotfix Plan
 
 If critical bugs are discovered:
 
