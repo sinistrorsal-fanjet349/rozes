@@ -1177,3 +1177,242 @@ fn parseCSVOptionsJSON(json: []const u8) !CSVOptions {
 
     return opts;
 }
+
+// ============================================================================
+// SIMD Aggregation Functions
+// ============================================================================
+
+/// Compute sum of a numeric column using SIMD acceleration
+///
+/// Args:
+///   - handle: DataFrame handle
+///   - col_name_ptr: Pointer to column name string
+///   - col_name_len: Length of column name
+///
+/// Returns: Sum as f64, or NaN on error
+export fn rozes_sum(
+    handle: i32,
+    col_name_ptr: [*]const u8,
+    col_name_len: u32,
+) f64 {
+    std.debug.assert(handle >= 0);
+    std.debug.assert(col_name_len > 0);
+
+    const df = registry.get(handle) orelse {
+        return std.math.nan(f64);
+    };
+
+    const col_name = col_name_ptr[0..col_name_len];
+    const col = df.column(col_name) orelse {
+        return std.math.nan(f64);
+    };
+
+    const simd_mod = @import("core/simd.zig");
+
+    return switch (col.value_type) {
+        .Int64 => blk: {
+            const data = col.asInt64() orelse return std.math.nan(f64);
+            const sum = simd_mod.sumInt64(data);
+            break :blk @as(f64, @floatFromInt(sum));
+        },
+        .Float64 => blk: {
+            const data = col.asFloat64() orelse return std.math.nan(f64);
+            break :blk simd_mod.sumFloat64(data);
+        },
+        else => std.math.nan(f64),
+    };
+}
+
+/// Compute mean of a numeric column using SIMD acceleration
+///
+/// Args:
+///   - handle: DataFrame handle
+///   - col_name_ptr: Pointer to column name string
+///   - col_name_len: Length of column name
+///
+/// Returns: Mean as f64, or NaN on error
+export fn rozes_mean(
+    handle: i32,
+    col_name_ptr: [*]const u8,
+    col_name_len: u32,
+) f64 {
+    std.debug.assert(handle >= 0);
+    std.debug.assert(col_name_len > 0);
+
+    const df = registry.get(handle) orelse {
+        return std.math.nan(f64);
+    };
+
+    const col_name = col_name_ptr[0..col_name_len];
+    const col = df.column(col_name) orelse {
+        return std.math.nan(f64);
+    };
+
+    const simd_mod = @import("core/simd.zig");
+
+    return switch (col.value_type) {
+        .Int64 => blk: {
+            const data = col.asInt64() orelse return std.math.nan(f64);
+            break :blk simd_mod.meanInt64(data) orelse std.math.nan(f64);
+        },
+        .Float64 => blk: {
+            const data = col.asFloat64() orelse return std.math.nan(f64);
+            break :blk simd_mod.meanFloat64(data) orelse std.math.nan(f64);
+        },
+        else => std.math.nan(f64),
+    };
+}
+
+/// Compute minimum of a numeric column using SIMD acceleration
+///
+/// Args:
+///   - handle: DataFrame handle
+///   - col_name_ptr: Pointer to column name string
+///   - col_name_len: Length of column name
+///
+/// Returns: Minimum as f64, or NaN on error
+export fn rozes_min(
+    handle: i32,
+    col_name_ptr: [*]const u8,
+    col_name_len: u32,
+) f64 {
+    std.debug.assert(handle >= 0);
+    std.debug.assert(col_name_len > 0);
+
+    const df = registry.get(handle) orelse {
+        return std.math.nan(f64);
+    };
+
+    const col_name = col_name_ptr[0..col_name_len];
+    const col = df.column(col_name) orelse {
+        return std.math.nan(f64);
+    };
+
+    const simd_mod = @import("core/simd.zig");
+
+    return switch (col.value_type) {
+        .Float64 => blk: {
+            const data = col.asFloat64() orelse return std.math.nan(f64);
+            break :blk simd_mod.minFloat64(data) orelse std.math.nan(f64);
+        },
+        .Int64 => blk: {
+            // For Int64, convert to Float64 for min
+            const data = col.asInt64() orelse return std.math.nan(f64);
+            if (data.len == 0) return std.math.nan(f64);
+
+            var min_val = data[0];
+            for (data[1..]) |val| {
+                if (val < min_val) min_val = val;
+            }
+            break :blk @as(f64, @floatFromInt(min_val));
+        },
+        else => std.math.nan(f64),
+    };
+}
+
+/// Compute maximum of a numeric column using SIMD acceleration
+///
+/// Args:
+///   - handle: DataFrame handle
+///   - col_name_ptr: Pointer to column name string
+///   - col_name_len: Length of column name
+///
+/// Returns: Maximum as f64, or NaN on error
+export fn rozes_max(
+    handle: i32,
+    col_name_ptr: [*]const u8,
+    col_name_len: u32,
+) f64 {
+    std.debug.assert(handle >= 0);
+    std.debug.assert(col_name_len > 0);
+
+    const df = registry.get(handle) orelse {
+        return std.math.nan(f64);
+    };
+
+    const col_name = col_name_ptr[0..col_name_len];
+    const col = df.column(col_name) orelse {
+        return std.math.nan(f64);
+    };
+
+    const simd_mod = @import("core/simd.zig");
+
+    return switch (col.value_type) {
+        .Float64 => blk: {
+            const data = col.asFloat64() orelse return std.math.nan(f64);
+            break :blk simd_mod.maxFloat64(data) orelse std.math.nan(f64);
+        },
+        .Int64 => blk: {
+            // For Int64, convert to Float64 for max
+            const data = col.asInt64() orelse return std.math.nan(f64);
+            if (data.len == 0) return std.math.nan(f64);
+
+            var max_val = data[0];
+            for (data[1..]) |val| {
+                if (val > max_val) max_val = val;
+            }
+            break :blk @as(f64, @floatFromInt(max_val));
+        },
+        else => std.math.nan(f64),
+    };
+}
+
+/// Compute variance of a numeric column using SIMD acceleration
+///
+/// Args:
+///   - handle: DataFrame handle
+///   - col_name_ptr: Pointer to column name string
+///   - col_name_len: Length of column name
+///
+/// Returns: Variance as f64, or NaN on error
+export fn rozes_variance(
+    handle: i32,
+    col_name_ptr: [*]const u8,
+    col_name_len: u32,
+) f64 {
+    std.debug.assert(handle >= 0);
+    std.debug.assert(col_name_len > 0);
+
+    const df = registry.get(handle) orelse {
+        return std.math.nan(f64);
+    };
+
+    const col_name = col_name_ptr[0..col_name_len];
+    const stats_mod = @import("core/stats.zig");
+
+    const result = stats_mod.variance(df, col_name) catch {
+        return std.math.nan(f64);
+    };
+
+    return result orelse std.math.nan(f64);
+}
+
+/// Compute standard deviation of a numeric column using SIMD acceleration
+///
+/// Args:
+///   - handle: DataFrame handle
+///   - col_name_ptr: Pointer to column name string
+///   - col_name_len: Length of column name
+///
+/// Returns: Standard deviation as f64, or NaN on error
+export fn rozes_stddev(
+    handle: i32,
+    col_name_ptr: [*]const u8,
+    col_name_len: u32,
+) f64 {
+    std.debug.assert(handle >= 0);
+    std.debug.assert(col_name_len > 0);
+
+    const df = registry.get(handle) orelse {
+        return std.math.nan(f64);
+    };
+
+    const col_name = col_name_ptr[0..col_name_len];
+    const stats_mod = @import("core/stats.zig");
+
+    const result = stats_mod.stdDev(df, col_name) catch {
+        return std.math.nan(f64);
+    };
+
+    return result orelse std.math.nan(f64);
+}

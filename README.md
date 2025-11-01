@@ -1,4 +1,4 @@
-# 🌹 Rozes - The Fastest DataFrame Library for TypeScript/JavaScript
+# 🌹 Rozes - The Fastest DataFrame Library for TypeScript/JavaScript/Zig
 
 **Blazing-fast data analysis powered by WebAssembly.** Rozes brings pandas-like analytics to TypeScript/JavaScript with native performance, columnar storage, and zero-copy operations.
 
@@ -60,36 +60,6 @@ const ages = df.column("age"); // Float64Array [30, 25] - zero-copy!
 
 ## Quick Start
 
-### Node.js (CommonJS)
-
-```javascript
-const { Rozes } = require("rozes");
-
-async function main() {
-  // Initialize Rozes
-  const rozes = await Rozes.init();
-
-  // Parse CSV
-  const df = rozes.DataFrame.fromCSV(`name,age,score
-Alice,30,95.5
-Bob,25,87.3
-Charlie,35,91.0`);
-
-  console.log(df.shape); // { rows: 3, cols: 3 }
-  console.log(df.columns); // ['name', 'age', 'score']
-
-  // Zero-copy column access
-  const ages = df.column("age"); // Float64Array
-  const avgAge = ages.reduce((a, b) => a + b) / ages.length;
-  console.log(`Average age: ${avgAge}`);
-
-  // Always free when done
-  df.free();
-}
-
-main();
-```
-
 ### Node.js (ES Modules)
 
 ```javascript
@@ -114,8 +84,31 @@ const df: DataFrame = rozes.DataFrame.fromCSV(csvText);
 const shape = df.shape; // { rows: number, cols: number }
 const columns = df.columns; // string[]
 const ages = df.column("age"); // Float64Array | Int32Array | BigInt64Array | null
+```
 
-df.free();
+### Node.js (CommonJS)
+
+```javascript
+const { Rozes } = require("rozes");
+```
+
+### Zig (Native)
+
+```zig
+const std = @import("std");
+const DataFrame = @import("rozes").DataFrame;
+
+pub fn main() !void {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    const csv = "name,age,score\nAlice,30,95.5\nBob,25,87.3";
+    var df = try DataFrame.fromCSVBuffer(allocator, csv, .{});
+    defer df.free();
+
+    std.debug.print("Rows: {}, Cols: {}\n", .{ df.rowCount, df.columns.len });
+}
 ```
 
 ### Browser (ES Modules)
@@ -297,6 +290,105 @@ npm install rozes
 
 - **[Node.js Examples](./examples/node/)** - Basic usage, file I/O, TypeScript
 - **[Browser Examples](./examples/browser/)** - Coming soon
+
+---
+
+## API Examples
+
+### JavaScript/TypeScript API (1.0.0)
+
+```javascript
+// CSV Parsing
+const df = rozes.DataFrame.fromCSV("name,age\nAlice,30");
+const df2 = rozes.DataFrame.fromCSVFile("data.csv");
+
+// Data Access
+df.shape;              // { rows: 1, cols: 2 }
+df.columns;            // ["name", "age"]
+df.length;             // 1
+df.column("age");      // Float64Array [30] - zero-copy!
+
+// Memory Management
+df.free();             // Manual cleanup (recommended)
+// OR use autoCleanup: true for automatic cleanup
+```
+
+### Zig API (1.0.0) - 50+ Operations
+
+```zig
+// CSV I/O
+var df = try DataFrame.fromCSVBuffer(allocator, csv, .{});
+var df2 = try DataFrame.fromCSVFile(allocator, "data.csv", .{});
+const csv_out = try df.toCSV(allocator, .{});
+
+// Data Access & Metadata
+df.rowCount;           // u32
+df.columns.len;        // usize
+const col = df.column("age");
+const row = df.row(0);
+
+// Selection & Filtering
+const selected = try df.select(&[_][]const u8{"name", "age"});
+const filtered = try df.filter(myFilterFn);
+const head = try df.head(10);
+const tail = try df.tail(10);
+
+// Sorting
+const sorted = try df.sort("age", .Ascending);
+const multi = try df.sortMulti(&[_][]const u8{"age", "score"}, &[_]SortOrder{.Ascending, .Descending});
+
+// GroupBy Aggregations
+const grouped = try df.groupBy("category");
+const sum_result = try grouped.sum("amount");
+const mean_result = try grouped.mean("score");
+const min_result = try grouped.min("age");
+const max_result = try grouped.max("age");
+const count_result = try grouped.count();
+
+// Joins (inner, left, right, outer, cross)
+const joined = try df.join(df2, "id", "id", .Inner);
+const left = try df.join(df2, "key", "key", .Left);
+
+// Statistical Operations
+const corr = try df.corr("age", "score");
+const cov = try df.cov("age", "score");
+const ranked = try df.rank("score");
+const counts = try df.valueCounts("category");
+
+// Missing Values
+const filled = try df.fillna(0.0);
+const dropped = try df.dropna();
+const nulls = df.isNull("age");
+
+// Reshape Operations
+const pivoted = try df.pivot("date", "product", "sales");
+const melted = try df.melt(&[_][]const u8{"id"}, &[_][]const u8{"val1", "val2"});
+const transposed = try df.transpose();
+const stacked = try df.stack();
+const unstacked = try df.unstack("level");
+
+// Combine DataFrames
+const concatenated = try DataFrame.concat(allocator, &[_]DataFrame{df1, df2}, .Rows);
+const merged = try df.merge(df2, &[_][]const u8{"key"});
+const appended = try df.append(df2);
+const updated = try df.update(df2);
+
+// Window Operations
+const rolling = try df.rolling(3).mean("price");
+const expanding = try df.expanding().sum("quantity");
+
+// Functional Operations
+const mapped = try df.map("age", mapFn);
+const applied = try df.apply(applyFn);
+
+// String Operations (10+ functions)
+const upper = try df.strUpper("name");
+const lower = try df.strLower("name");
+const len = try df.strLen("name");
+const contains = try df.strContains("name", "Alice");
+const startsWith = try df.strStartsWith("name", "A");
+const endsWith = try df.strEndsWith("name", "e");
+```
 
 ---
 

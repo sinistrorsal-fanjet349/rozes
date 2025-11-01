@@ -930,6 +930,235 @@ class DataFrame {
     }
 
     /**
+     * Compute sum of a numeric column using SIMD acceleration
+     * @param {string} columnName - Name of the column
+     * @returns {number} - Sum of the column values
+     * @example
+     * const total = df.sum('price');
+     * console.log(`Total price: ${total}`);
+     */
+    sum(columnName) {
+        this._checkNotFreed();
+        const wasm = this._wasm;
+
+        if (!columnName || typeof columnName !== 'string') {
+            throw new Error('sum() requires a non-empty column name');
+        }
+
+        // Allocate memory for column name
+        const nameBytes = new TextEncoder().encode(columnName);
+        const namePtr = wasm.instance.exports.rozes_alloc(nameBytes.length);
+        const nameBuffer = new Uint8Array(wasm.memory.buffer, namePtr, nameBytes.length);
+        nameBuffer.set(nameBytes);
+
+        try {
+            const result = wasm.instance.exports.rozes_sum(
+                this._handle,
+                namePtr,
+                nameBytes.length
+            );
+
+            if (isNaN(result)) {
+                throw new Error(`Failed to compute sum of column '${columnName}'`);
+            }
+
+            return result;
+        } finally {
+            wasm.instance.exports.rozes_free_buffer(namePtr, nameBytes.length);
+        }
+    }
+
+    /**
+     * Compute mean of a numeric column using SIMD acceleration
+     * @param {string} columnName - Name of the column
+     * @returns {number} - Mean of the column values
+     * @example
+     * const avgAge = df.mean('age');
+     * console.log(`Average age: ${avgAge}`);
+     */
+    mean(columnName) {
+        this._checkNotFreed();
+        const wasm = this._wasm;
+
+        if (!columnName || typeof columnName !== 'string') {
+            throw new Error('mean() requires a non-empty column name');
+        }
+
+        const nameBytes = new TextEncoder().encode(columnName);
+        const namePtr = wasm.instance.exports.rozes_alloc(nameBytes.length);
+        const nameBuffer = new Uint8Array(wasm.memory.buffer, namePtr, nameBytes.length);
+        nameBuffer.set(nameBytes);
+
+        try {
+            const result = wasm.instance.exports.rozes_mean(
+                this._handle,
+                namePtr,
+                nameBytes.length
+            );
+
+            if (isNaN(result)) {
+                throw new Error(`Failed to compute mean of column '${columnName}'`);
+            }
+
+            return result;
+        } finally {
+            wasm.instance.exports.rozes_free_buffer(namePtr, nameBytes.length);
+        }
+    }
+
+    /**
+     * Find minimum value in a numeric column using SIMD acceleration
+     * @param {string} columnName - Name of the column
+     * @returns {number} - Minimum value in the column
+     * @example
+     * const minPrice = df.min('price');
+     * console.log(`Lowest price: ${minPrice}`);
+     */
+    min(columnName) {
+        this._checkNotFreed();
+        const wasm = this._wasm;
+
+        if (!columnName || typeof columnName !== 'string') {
+            throw new Error('min() requires a non-empty column name');
+        }
+
+        const nameBytes = new TextEncoder().encode(columnName);
+        const namePtr = wasm.instance.exports.rozes_alloc(nameBytes.length);
+        const nameBuffer = new Uint8Array(wasm.memory.buffer, namePtr, nameBytes.length);
+        nameBuffer.set(nameBytes);
+
+        try {
+            const result = wasm.instance.exports.rozes_min(
+                this._handle,
+                namePtr,
+                nameBytes.length
+            );
+
+            if (isNaN(result)) {
+                throw new Error(`Failed to compute min of column '${columnName}'`);
+            }
+
+            return result;
+        } finally {
+            wasm.instance.exports.rozes_free_buffer(namePtr, nameBytes.length);
+        }
+    }
+
+    /**
+     * Find maximum value in a numeric column using SIMD acceleration
+     * @param {string} columnName - Name of the column
+     * @returns {number} - Maximum value in the column
+     * @example
+     * const maxScore = df.max('score');
+     * console.log(`Highest score: ${maxScore}`);
+     */
+    max(columnName) {
+        this._checkNotFreed();
+        const wasm = this._wasm;
+
+        if (!columnName || typeof columnName !== 'string') {
+            throw new Error('max() requires a non-empty column name');
+        }
+
+        const nameBytes = new TextEncoder().encode(columnName);
+        const namePtr = wasm.instance.exports.rozes_alloc(nameBytes.length);
+        const nameBuffer = new Uint8Array(wasm.memory.buffer, namePtr, nameBytes.length);
+        nameBuffer.set(nameBytes);
+
+        try {
+            const result = wasm.instance.exports.rozes_max(
+                this._handle,
+                namePtr,
+                nameBytes.length
+            );
+
+            if (isNaN(result)) {
+                throw new Error(`Failed to compute max of column '${columnName}'`);
+            }
+
+            return result;
+        } finally {
+            wasm.instance.exports.rozes_free_buffer(namePtr, nameBytes.length);
+        }
+    }
+
+    /**
+     * Compute variance of a numeric column using SIMD acceleration
+     * @param {string} columnName - Name of the column
+     * @returns {number} - Sample variance of the column values
+     * @example
+     * const priceVar = df.variance('price');
+     * console.log(`Price variance: ${priceVar}`);
+     */
+    variance(columnName) {
+        this._checkNotFreed();
+        const wasm = this._wasm;
+
+        if (!columnName || typeof columnName !== 'string') {
+            throw new Error('variance() requires a non-empty column name');
+        }
+
+        const nameBytes = new TextEncoder().encode(columnName);
+        const namePtr = wasm.instance.exports.rozes_alloc(nameBytes.length);
+        const nameBuffer = new Uint8Array(wasm.memory.buffer, namePtr, nameBytes.length);
+        nameBuffer.set(nameBytes);
+
+        try {
+            const result = wasm.instance.exports.rozes_variance(
+                this._handle,
+                namePtr,
+                nameBytes.length
+            );
+
+            if (isNaN(result)) {
+                throw new Error(`Failed to compute variance of column '${columnName}'`);
+            }
+
+            return result;
+        } finally {
+            wasm.instance.exports.rozes_free_buffer(namePtr, nameBytes.length);
+        }
+    }
+
+    /**
+     * Compute standard deviation of a numeric column using SIMD acceleration
+     * @param {string} columnName - Name of the column
+     * @returns {number} - Standard deviation of the column values
+     * @example
+     * const ageStd = df.stddev('age');
+     * console.log(`Age std dev: ${ageStd}`);
+     */
+    stddev(columnName) {
+        this._checkNotFreed();
+        const wasm = this._wasm;
+
+        if (!columnName || typeof columnName !== 'string') {
+            throw new Error('stddev() requires a non-empty column name');
+        }
+
+        const nameBytes = new TextEncoder().encode(columnName);
+        const namePtr = wasm.instance.exports.rozes_alloc(nameBytes.length);
+        const nameBuffer = new Uint8Array(wasm.memory.buffer, namePtr, nameBytes.length);
+        nameBuffer.set(nameBytes);
+
+        try {
+            const result = wasm.instance.exports.rozes_stddev(
+                this._handle,
+                namePtr,
+                nameBytes.length
+            );
+
+            if (isNaN(result)) {
+                throw new Error(`Failed to compute stddev of column '${columnName}'`);
+            }
+
+            return result;
+        } finally {
+            wasm.instance.exports.rozes_free_buffer(namePtr, nameBytes.length);
+        }
+    }
+
+    /**
      * Pretty-print DataFrame info
      * @returns {string}
      */

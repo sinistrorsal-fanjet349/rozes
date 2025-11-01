@@ -1324,7 +1324,224 @@ pub fn pivot(...) !DataFrame {
 
 ---
 
-### Learning #17: Shallow Copy Requires Lifetime Documentation 🔥
+### Learning #17: HashMap Iterator Loops MUST Be Bounded 🔥
+
+**Discovery** (Phase 1-3 Review): 5 unbounded HashMap iterator loops found across codebase.
+
+**Violation**: `while (iter.next()) |entry|` has no explicit MAX constant or bounds check.
+
+**Risk**: Corrupted HashMap could iterate indefinitely → infinite loop, OOM, data corruption.
+
+**Solution**: Bounded iterator with post-assertion:
+
+```zig
+// ❌ WRONG: Unbounded iterator
+var iter = counts.iterator();
+var idx: u32 = 0;
+while (iter.next()) |entry| {
+    pairs[idx] = entry;
+    idx += 1;
+}
+
+// ✅ CORRECT: Bounded with explicit limit
+var iter = counts.iterator();
+var idx: u32 = 0;
+const MAX_ITERATIONS: u32 = 10_000; // Reasonable limit for unique values
+while (iter.next()) |entry| : (idx += 1) {
+    std.debug.assert(idx < MAX_ITERATIONS); // Bounds check
+    pairs[idx] = entry;
+}
+std.debug.assert(idx <= MAX_ITERATIONS); // Post-condition
+```
+
+**When to use**:
+- HashMap/AutoHashMap iterator loops
+- Any iterator over runtime data collections
+- Container iteration where size is user-controlled
+
+**Impact**: 5 violations fixed across parallel_parser.zig (2), stats.zig (2), join.zig (1).
+
+---
+
+### Learning #18: For-Loops Over Runtime Collections Are Violations 🔥
+
+**Discovery** (Phase 1-3 Review): 6 for-loops over runtime data found - all Tiger Style violations.
+
+**Violation**: `for (items) |item|` over user-controlled collections (partitions, entries, write_offsets).
+
+**Risk**: Malicious input triggers unbounded iteration (1M partitions, corrupted arrays).
+
+**Solution**: Replace with bounded while loops:
+
+```zig
+// ❌ WRONG: For-loop over runtime data
+for (write_offsets, 0..) |offset, partition_idx| {
+    const expected_end = ctx.partitions[partition_idx].start +
+                        ctx.partitions[partition_idx].count;
+    std.debug.assert(offset == expected_end);
+}
+
+// ✅ CORRECT: Bounded while loop with MAX constant
+var partition_idx: u32 = 0;
+while (partition_idx < PARTITION_COUNT) : (partition_idx += 1) {
+    const expected_end = ctx.partitions[partition_idx].start +
+                        ctx.partitions[partition_idx].count;
+    std.debug.assert(write_offsets[partition_idx] == expected_end);
+}
+std.debug.assert(partition_idx == PARTITION_COUNT); // Post-condition
+```
+
+**When for-loops are OK**:
+- ✅ Comptime iteration: `comptime for (type_list) |T|`
+- ✅ Fixed arrays: `for ([_]ValueType{.Int64, .Float64}) |t|`
+- ❌ Runtime data: `for (df.columns)`, `for (rows)`, `for (partitions)`
+
+**Detection**: `grep -n "for.*|" src/**/*.zig | grep -v "comptime"`
+
+**Impact**: 6 violations fixed in radix_join.zig (3), join.zig (3).
+
+---
+
+### Learning #19: NaN Handling in Comparisons is Mandatory 🔥
+
+**Discovery** (Phase 1-3 Review): Float64 sort operations panic on NaN instead of handling gracefully.
+
+**Problem**: `std.math.order(a, b)` panics when encountering NaN → production crashes.
+
+**Real-World Impact**: Sensor data, financial data, data imports often contain NaN (0/0, sensor failures).
+
+**Solution**: Check NaN before comparison:
+
+```zig
+// ❌ CRITICAL: Panics on NaN input
+std.mem.sort(IndexValue, pairs, {}, struct {
+    fn lessThan(_: void, a: IndexValue, b: IndexValue) bool {
+        return a.value < b.value; // ☠️ PANICS IF NaN
+    }
+}.lessThan);
+
+// ✅ CORRECT: NaN-safe comparison
+std.mem.sort(IndexValue, pairs, {}, struct {
+    fn lessThan(_: void, a: IndexValue, b: IndexValue) bool {
+        const a_is_nan = std.math.isNan(a.value);
+        const b_is_nan = std.math.isNan(b.value);
+
+        if (a_is_nan and b_is_nan) return false; // Both NaN: equal (stable sort)
+        if (a_is_nan) return false; // a is NaN, sorts to end (a > b)
+        if (b_is_nan) return true;  // b is NaN, sorts to end (a < b)
+
+        return a.value < b.value; // Normal comparison
+    }
+}.lessThan);
+```
+
+**Where to check**:
+- ✅ Comparisons (sort, min, max) - use `std.math.isNan()` before `std.math.order()`
+- ✅ Aggregations (sum, mean) - skip NaN in accumulation
+- ✅ Type inference - detect Float64 even with NaN present
+- ✅ Export - handle NaN → "NaN" string in CSV
+
+**Impact**: 2 violations fixed in stats.zig (rank, percentileRank).
+
+---
+
+### Learning #20: usize is Platform-Dependent - Use u32 🔥
+
+**Discovery** (Phase 1-3 Review): 15 uses of `usize` for iteration counters found in SIMD code.
+
+**Problem**: `usize` changes size between wasm32 (32-bit) and wasm64 (64-bit) → platform-dependent behavior.
+
+**Tiger Style Requirement**: Use explicit types (u32) for consistent cross-platform behavior.
+
+**Solution**:
+
+```zig
+// ❌ WRONG: Architecture-dependent size
+var i: usize = 0;
+const simd_width = 2;
+
+while (i + simd_width <= data_a.len) {
+    // ... SIMD operations
+    i += simd_width;
+}
+
+// ✅ CORRECT: Explicit u32 with bounds check
+var i: u32 = 0;
+const simd_width: u32 = 2;
+const data_len: u32 = @intCast(data_a.len);
+
+std.debug.assert(data_len <= 1_000_000_000); // Pre-condition: Reasonable limit
+
+while (i + simd_width <= data_len and iterations < MAX_ITERATIONS) : (iterations += 1) {
+    // ... SIMD operations
+    i += simd_width;
+}
+
+std.debug.assert(i <= data_len); // Post-condition
+```
+
+**When to use usize**:
+- ❌ Loop counters (use u32)
+- ❌ Array indices (use u32)
+- ❌ Data sizes (use u32 for DataFrame operations)
+- ✅ Memory offsets (pointer arithmetic only)
+
+**Impact**: 15 violations found in simd.zig - needs fixing for WebAssembly consistency.
+
+---
+
+### Learning #21: Assertions Scale With Function Complexity 🔥
+
+**Discovery** (Phase 1-3 Review): `JoinKey.compute()` is 76 lines but only has 2 assertions.
+
+**Rule**: Complex functions (>50 lines, multiple branches) need proportionally more assertions.
+
+**Pattern**: At least 1 assertion per 20 lines of code:
+- 0-20 lines: 2 assertions minimum (Tiger Style baseline)
+- 21-40 lines: 3 assertions (add loop invariant)
+- 41-60 lines: 4 assertions (add intermediate state checks)
+- 61-80 lines: 5+ assertions (add per-branch validation)
+
+**Solution for `JoinKey.compute()`**:
+
+```zig
+pub fn compute(
+    row_idx: u32,
+    col_cache: []const ColumnCache,
+) !JoinKey {
+    std.debug.assert(col_cache.len > 0); // Pre-condition #1
+    std.debug.assert(col_cache.len <= MAX_JOIN_COLUMNS); // Pre-condition #2
+    std.debug.assert(row_idx < std.math.maxInt(u32)); // Pre-condition #3 ✅ NEW
+
+    const FNV_OFFSET: u64 = 14695981039346656037;
+    const FNV_PRIME: u64 = 1099511628211;
+    var hash: u64 = FNV_OFFSET;
+
+    var col_idx: u32 = 0;
+    while (col_idx < MAX_JOIN_COLUMNS and col_idx < col_cache.len) : (col_idx += 1) {
+        std.debug.assert(col_idx < col_cache.len); // Loop invariant ✅ NEW
+
+        const cached_col = col_cache[col_idx];
+        // ... hashing logic for each type
+    }
+
+    std.debug.assert(col_idx == col_cache.len); // Post-condition #1
+    std.debug.assert(hash != FNV_OFFSET); // Post-condition #2: Hash modified ✅ NEW
+
+    return JoinKey{
+        .hash = hash,
+        .row_idx = row_idx,
+    };
+}
+```
+
+**Result**: 2 → 5 assertions (matches 76-line complexity).
+
+**Impact**: Missing invariant checks identified in join.zig `JoinKey.compute()`.
+
+---
+
+### Learning #22: Shallow Copy Requires Lifetime Documentation 🔥
 
 **Discovery** (0.6.0 Review): Categorical columns use shallow copy (shared dictionary) but lifetime contract isn't documented.
 
@@ -1770,6 +1987,186 @@ pub const CSVParser = struct {
         // Implementation in Phase 3
     }
 };
+```
+
+---
+
+## Node.js API Propagation
+
+> **🚀 CRITICAL**: All new features MUST be exposed to the Node.js API to provide a complete DataFrame experience for JavaScript users.
+
+### Overview
+
+Rozes provides a complete DataFrame library for Node.js through WebAssembly bindings. Any new functionality implemented in Zig **must** be exposed to JavaScript users through the Node.js API.
+
+### Propagation Checklist
+
+When implementing new features (like SIMD aggregations), follow this checklist:
+
+#### 1. **Implement in Zig** (`src/core/`)
+- Write the core functionality in Zig
+- Follow Tiger Style (2+ assertions, bounded loops, ≤70 lines)
+- Add unit tests
+
+#### 2. **Export from Wasm** (`src/wasm.zig`)
+- Add Wasm export function with C ABI
+- Handle memory passing (pointers, lengths)
+- Return results via Wasm memory
+
+**Example** (SIMD aggregation):
+```zig
+// src/wasm.zig
+export fn df_sum_simd(df_ptr: [*]const u8, df_len: usize, col_name_ptr: [*]const u8, col_name_len: usize) f64 {
+    const df = deserializeDataFrame(df_ptr[0..df_len]) catch return std.math.nan(f64);
+    const col_name = col_name_ptr[0..col_name_len];
+
+    const col = df.column(col_name) orelse return std.math.nan(f64);
+
+    // Use SIMD aggregation
+    const result = simd.sumFloat64(col.asFloat64() orelse return std.math.nan(f64)) catch return std.math.nan(f64);
+
+    return result;
+}
+```
+
+#### 3. **Wrap in JavaScript** (`js/rozes.js`)
+- Create a user-friendly JavaScript API
+- Handle type conversions (JS ↔ Wasm)
+- Add JSDoc comments for TypeScript support
+
+**Example**:
+```javascript
+// js/rozes.js
+class DataFrame {
+  sum(columnName, useSIMD = true) {
+    const colNamePtr = this._allocString(columnName);
+    try {
+      const result = this._wasm.df_sum_simd(
+        this._ptr,
+        this._len,
+        colNamePtr,
+        columnName.length
+      );
+      return result;
+    } finally {
+      this._wasm.free(colNamePtr);
+    }
+  }
+}
+```
+
+#### 4. **Add TypeScript Types** (`dist/index.d.ts`)
+- Export types for all new methods
+- Document parameters and return types
+- Add JSDoc examples
+
+**Example**:
+```typescript
+// dist/index.d.ts
+export class DataFrame {
+  /**
+   * Compute sum of a numeric column with optional SIMD acceleration
+   * @param columnName - Name of the column to sum
+   * @param useSIMD - Use SIMD optimization (default: true)
+   * @returns Sum of column values
+   * @example
+   * const total = df.sum('price');
+   * console.log(`Total: ${total}`);
+   */
+  sum(columnName: string, useSIMD?: boolean): number;
+}
+```
+
+#### 5. **Add Node.js Tests** (`src/test/nodejs/`)
+- Test the JavaScript API
+- Verify correctness against Zig tests
+- Test edge cases (empty data, NaN, etc.)
+
+**Example**:
+```javascript
+// src/test/nodejs/aggregation_test.js
+const { DataFrame } = require('../../js/rozes');
+
+describe('DataFrame.sum()', () => {
+  it('computes sum with SIMD', () => {
+    const df = DataFrame.fromCSV('value\n10\n20\n30\n');
+    const result = df.sum('value');
+    expect(result).toBe(60);
+  });
+
+  it('handles empty column', () => {
+    const df = DataFrame.fromCSV('value\n');
+    const result = df.sum('value');
+    expect(result).toBe(0);
+  });
+});
+```
+
+#### 6. **Update Documentation**
+- Add examples to README.md
+- Document performance improvements
+- Update API reference
+
+### SIMD Aggregations Propagation (Milestone 1.2.0 Phase 1)
+
+For the SIMD aggregation feature, ensure these functions are exposed:
+
+| Zig Function | Wasm Export | JS Method | TypeScript Type |
+|--------------|-------------|-----------|-----------------|
+| `simd.sumInt64()` | `df_sum_int64()` | `df.sum(col)` | `sum(columnName: string): number` |
+| `simd.sumFloat64()` | `df_sum_float64()` | `df.sum(col)` | `sum(columnName: string): number` |
+| `simd.meanFloat64()` | `df_mean()` | `df.mean(col)` | `mean(columnName: string): number` |
+| `simd.minFloat64()` | `df_min()` | `df.min(col)` | `min(columnName: string): number` |
+| `simd.maxFloat64()` | `df_max()` | `df.max(col)` | `max(columnName: string): number` |
+| `simd.varianceFloat64()` | `df_variance()` | `df.variance(col)` | `variance(columnName: string): number` |
+| `simd.stdDevFloat64()` | `df_stddev()` | `df.stddev(col)` | `stddev(columnName: string): number` |
+
+### Performance Considerations
+
+**SIMD Performance in Node.js/Browser**:
+- SIMD operations provide 30%+ speedup for aggregations
+- SIMD support: Chrome 91+, Firefox 89+, Safari 16.4+, Node.js 16+
+- Fallback to scalar for older environments (automatic)
+
+**Memory Management**:
+- Always free temporary Wasm memory allocations
+- Use try/finally blocks in JavaScript
+- Document memory ownership in JSDoc
+
+### Common Pitfalls
+
+**❌ DON'T**:
+- Forget to export from wasm.zig
+- Skip TypeScript type definitions
+- Ignore memory cleanup in JavaScript
+- Assume SIMD is always available (check runtime)
+
+**✅ DO**:
+- Test both SIMD and scalar paths
+- Document performance characteristics
+- Add usage examples in JSDoc
+- Handle errors gracefully
+
+### Testing Node.js API
+
+**Run Node.js tests**:
+```bash
+# Build Wasm
+zig build -Dtarget=wasm32-freestanding -Doptimize=ReleaseSmall
+
+# Run Node.js tests
+npm test
+```
+
+**Manual testing**:
+```javascript
+const { DataFrame } = require('./js/rozes');
+
+const df = DataFrame.fromCSV('price,quantity\n10.5,2\n20.0,3\n15.75,1\n');
+console.log('Sum:', df.sum('price'));          // 46.25 (SIMD accelerated)
+console.log('Mean:', df.mean('quantity'));      // 2.0
+console.log('Min:', df.min('price'));           // 10.5
+console.log('Max:', df.max('price'));           // 20.0
 ```
 
 ---

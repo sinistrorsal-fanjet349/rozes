@@ -47,6 +47,23 @@ pub const BenchmarkResult = struct {
         std.debug.print("  Throughput: {d:.0} rows/sec\n", .{self.throughput});
         std.debug.print("  Row Count: {}\n\n", .{self.row_count});
     }
+
+    /// Prints ultra-fast benchmark results with microsecond precision
+    /// Use for SIMD operations that complete in <1ms
+    pub fn printFast(self: BenchmarkResult, name: []const u8) void {
+        std.debug.assert(self.throughput > 0); // Pre-condition
+
+        const duration_us = @as(f64, @floatFromInt(self.duration_ns)) / 1000.0;
+
+        std.debug.print("{s}:\n", .{name});
+        if (duration_us >= 1.0) {
+            std.debug.print("  Duration: {d:.2}µs ({d:.4}ms)\n", .{ duration_us, self.duration_ms });
+        } else {
+            std.debug.print("  Duration: {}ns ({d:.4}µs)\n", .{ self.duration_ns, duration_us });
+        }
+        std.debug.print("  Throughput: {d:.0} rows/sec\n", .{self.throughput});
+        std.debug.print("  Row Count: {}\n\n", .{self.row_count});
+    }
 };
 
 /// Generates test CSV data

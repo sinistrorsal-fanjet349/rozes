@@ -49,6 +49,9 @@ pub const operations = @import("core/operations.zig");
 pub const reshape = @import("core/reshape.zig");
 pub const PivotOptions = reshape.PivotOptions;
 pub const MeltOptions = reshape.MeltOptions;
+
+// Join optimizations (for benchmarks)
+pub const radix_join = @import("core/radix_join.zig");
 pub const StackOptions = reshape.StackOptions;
 pub const UnstackOptions = reshape.UnstackOptions;
 

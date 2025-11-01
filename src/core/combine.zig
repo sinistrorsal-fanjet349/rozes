@@ -184,10 +184,14 @@ fn concatVertical(
 
     var iter = all_columns.iterator();
     var col_idx: u32 = 0;
+    const MAX_ITERATIONS: u32 = 10_000; // Reasonable unique column limit
     while (iter.next()) |entry| : (col_idx += 1) {
+        std.debug.assert(col_idx < num_columns); // Pre-condition
+        std.debug.assert(col_idx < MAX_ITERATIONS); // Bounds check
         column_names[col_idx] = entry.key_ptr.*;
     }
-    std.debug.assert(col_idx == num_columns);
+    std.debug.assert(col_idx == num_columns); // All columns extracted
+    std.debug.assert(col_idx <= MAX_ITERATIONS); // Post-condition
 
     // Sort column names for deterministic order
     std.mem.sort([]const u8, column_names, {}, struct {
@@ -643,10 +647,14 @@ fn mergeInner(
     var right_index = std.StringHashMap(std.ArrayList(u32)).init(allocator);
     defer {
         var iter = right_index.iterator();
-        while (iter.next()) |entry| {
+        var cleanup_idx: u32 = 0;
+        const MAX_CLEANUP_ITERATIONS: u32 = 10_000; // Max hash table entries
+        while (iter.next()) |entry| : (cleanup_idx += 1) {
+            std.debug.assert(cleanup_idx < MAX_CLEANUP_ITERATIONS); // Bounds check
             entry.value_ptr.deinit();
             allocator.free(entry.key_ptr.*);
         }
+        std.debug.assert(cleanup_idx <= MAX_CLEANUP_ITERATIONS); // Post-condition
         right_index.deinit();
     }
 
@@ -815,10 +823,14 @@ fn mergeLeft(
     var right_index = std.StringHashMap(std.ArrayList(u32)).init(allocator);
     defer {
         var iter = right_index.iterator();
-        while (iter.next()) |entry| {
+        var cleanup_idx: u32 = 0;
+        const MAX_CLEANUP_ITERATIONS: u32 = 10_000; // Max hash table entries
+        while (iter.next()) |entry| : (cleanup_idx += 1) {
+            std.debug.assert(cleanup_idx < MAX_CLEANUP_ITERATIONS); // Bounds check
             entry.value_ptr.deinit();
             allocator.free(entry.key_ptr.*);
         }
+        std.debug.assert(cleanup_idx <= MAX_CLEANUP_ITERATIONS); // Post-condition
         right_index.deinit();
     }
 
@@ -1026,10 +1038,14 @@ fn mergeOuter(
     var right_index = std.StringHashMap(std.ArrayList(u32)).init(allocator);
     defer {
         var iter = right_index.iterator();
-        while (iter.next()) |entry| {
+        var cleanup_idx: u32 = 0;
+        const MAX_CLEANUP_ITERATIONS: u32 = 10_000; // Max hash table entries
+        while (iter.next()) |entry| : (cleanup_idx += 1) {
+            std.debug.assert(cleanup_idx < MAX_CLEANUP_ITERATIONS); // Bounds check
             entry.value_ptr.deinit();
             allocator.free(entry.key_ptr.*);
         }
+        std.debug.assert(cleanup_idx <= MAX_CLEANUP_ITERATIONS); // Post-condition
         right_index.deinit();
     }
 
@@ -1421,9 +1437,13 @@ pub fn update(
     var other_index = std.StringHashMap(u32).init(allocator);
     defer {
         var iter = other_index.iterator();
-        while (iter.next()) |entry| {
+        var cleanup_idx: u32 = 0;
+        const MAX_CLEANUP_ITERATIONS: u32 = 10_000; // Max hash table entries
+        while (iter.next()) |entry| : (cleanup_idx += 1) {
+            std.debug.assert(cleanup_idx < MAX_CLEANUP_ITERATIONS); // Bounds check
             allocator.free(entry.key_ptr.*);
         }
+        std.debug.assert(cleanup_idx <= MAX_CLEANUP_ITERATIONS); // Post-condition
         other_index.deinit();
     }
 
