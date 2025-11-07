@@ -96,15 +96,13 @@ test('String.replace() - empty pattern', async () => {
     const rozes = await Rozes.init();
     const df = rozes.DataFrame.fromCSV("text\nhello\n");
 
-    // Replacing empty pattern should leave string unchanged
-    const result = df.str.replace('text', '', 'X');
-
-    assert.strictEqual(result.shape.rows, 1);
-    // Behavior may vary - either unchanged or X inserted between chars
-    assert.ok(result.column('text')[0].includes('h'));
+    // Tiger Style: Empty pattern should throw an error (explicit error handling)
+    // This prevents undefined behavior - what does replacing "" with "X" mean?
+    assert.throws(() => {
+        df.str.replace('text', '', 'X');
+    }, /EmptyPattern|InvalidFormat|empty pattern|invalid/i);
 
     df.free();
-    result.free();
 });
 
 test('String.replace() - empty replacement', async () => {

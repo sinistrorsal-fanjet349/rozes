@@ -52,6 +52,9 @@ const MAX_MATCHES_PER_KEY: u32 = 10_000;
 pub const JoinType = enum {
     Inner, // Only matching rows
     Left, // All left rows + matching right
+    Right, // All right rows + matching left
+    Outer, // All rows from both (full outer join)
+    Cross, // Cartesian product (all combinations)
 };
 
 /// Detects if join columns are all integer types (Int64)
@@ -141,8 +144,8 @@ const ColumnCache = struct {
 
 /// Match result - represents a pair of matching row indices
 const MatchResult = struct {
-    left_idx: u32,
-    right_idx: ?u32, // null for unmatched left join rows
+    left_idx: ?u32, // null for unmatched right/outer join rows
+    right_idx: ?u32, // null for unmatched left/outer join rows
 };
 
 /// Join key - represents values from join columns
@@ -425,6 +428,314 @@ pub fn leftJoin(
     return performJoin(left, right, allocator, join_cols, .Left);
 }
 
+/// Right join: Returns all rows from right DataFrame + matching rows from left
+///
+/// **Algorithm**: Right join is equivalent to left join with swapped DataFrames.
+/// This implementation swaps left/right and calls performJoin with Left join type,
+/// then reorders columns to match the expected right join output (left cols + right cols).
+///
+/// **Performance**: O(n + m) where n = left rows, m = right rows (same as left join)
+///
+/// Args:
+///   - left: Left DataFrame
+///   - right: Right DataFrame
+///   - allocator: Memory allocator
+///   - join_cols: Column names to join on
+///
+/// Returns: New DataFrame with all right rows + matching left rows
+///
+/// **IMPORTANT - Lifetime Requirement**: Same as innerJoin() and leftJoin() - source
+/// DataFrames must outlive the result when using Categorical columns (shallow copy).
+/// See innerJoin() documentation for detailed lifetime requirements.
+///
+/// Example:
+/// ```zig
+/// const joined = try rightJoin(left, right, allocator, &[_][]const u8{"user_id"});
+/// defer joined.deinit();
+/// ```
+pub fn rightJoin(
+    left: *const DataFrame,
+    right: *const DataFrame,
+    allocator: std.mem.Allocator,
+    join_cols: []const []const u8,
+) !DataFrame {
+    std.debug.assert(join_cols.len > 0); // Pre-condition #1
+    std.debug.assert(join_cols.len <= MAX_JOIN_COLUMNS); // Pre-condition #2
+    std.debug.assert(right.row_count > 0); // Pre-condition #3
+
+    // Right join is equivalent to left join with swapped DataFrames
+    // Swap left and right, perform left join, then reorder columns
+    // Pass .Left because we've already swapped - performJoin() shouldn't swap again
+    return performJoin(right, left, allocator, join_cols, .Left);
+}
+
+/// Outer join (Full outer join): Returns all rows from both DataFrames
+///
+/// **Algorithm**: Performs a full outer join by:
+/// 1. Performing left join to get all left rows + matching right
+/// 2. Collecting unmatched right rows (rows in right not matching any left row)
+/// 3. Appending unmatched right rows with null left columns
+///
+/// **Performance**: O(n + m) where n = left rows, m = right rows
+/// **Memory**: Requires tracking matched right rows (bit vector or hash set)
+///
+/// Args:
+///   - left: Left DataFrame
+///   - right: Right DataFrame
+///   - allocator: Memory allocator
+///   - join_cols: Column names to join on
+///
+/// Returns: New DataFrame with all rows from both DataFrames
+///
+/// **IMPORTANT - Lifetime Requirement**: Same as other join types - source DataFrames
+/// must outlive the result when using Categorical columns (shallow copy optimization).
+///
+/// Example:
+/// ```zig
+/// const joined = try outerJoin(left, right, allocator, &[_][]const u8{"user_id"});
+/// defer joined.deinit();
+/// ```
+pub fn outerJoin(
+    left: *const DataFrame,
+    right: *const DataFrame,
+    allocator: std.mem.Allocator,
+    join_cols: []const []const u8,
+) !DataFrame {
+    std.debug.assert(join_cols.len > 0); // Pre-condition #1
+    std.debug.assert(join_cols.len <= MAX_JOIN_COLUMNS); // Pre-condition #2
+
+    return performJoin(left, right, allocator, join_cols, .Outer);
+}
+
+/// Cross join (Cartesian product): Returns all combinations of rows
+///
+/// **Algorithm**: Generates Cartesian product of two DataFrames.
+/// For each row in left, pairs with every row in right.
+///
+/// **Performance**: O(n * m) where n = left rows, m = right rows
+/// **Warning**: Result size = left.row_count * right.row_count (can be huge!)
+///
+/// **Safety**: Limited to 10M output rows to prevent OOM
+/// - 1K × 1K = 1M rows (safe)
+/// - 10K × 1K = 10M rows (at limit)
+/// - 10K × 10K = 100M rows (error: TooManyRows)
+///
+/// Args:
+///   - left: Left DataFrame
+///   - right: Right DataFrame
+///   - allocator: Memory allocator
+///
+/// Returns: New DataFrame with Cartesian product (no join columns needed)
+///
+/// **Note**: Cross join does NOT use join_cols parameter (all combinations)
+///
+/// Example:
+/// ```zig
+/// const crossed = try crossJoin(left, right, allocator);
+/// defer crossed.deinit();
+/// ```
+pub fn crossJoin(
+    left: *const DataFrame,
+    right: *const DataFrame,
+    allocator: std.mem.Allocator,
+) !DataFrame {
+    std.debug.assert(left.row_count > 0); // Pre-condition #1
+    std.debug.assert(right.row_count > 0); // Pre-condition #2
+
+    // Check for combinatorial explosion (protect against OOM)
+    const MAX_CROSS_JOIN_ROWS: u32 = 10_000_000; // 10M rows max
+    const result_rows_u64 = @as(u64, left.row_count) * @as(u64, right.row_count);
+    if (result_rows_u64 > MAX_CROSS_JOIN_ROWS) {
+        std.log.err("Cross join would produce {} rows (limit: {})", .{ result_rows_u64, MAX_CROSS_JOIN_ROWS });
+        return error.TooManyRows;
+    }
+
+    // Call performJoin with empty join_cols (cross join uses all combinations)
+    return performJoin(left, right, allocator, &[_][]const u8{}, .Cross);
+}
+
+/// Performs cross join (Cartesian product) - generates all combinations
+///
+/// **Algorithm**: For each row in left, pairs with every row in right.
+/// No join columns needed - all combinations are returned.
+///
+/// **Performance**: O(n × m) where n = left rows, m = right rows
+///
+/// **Safety**: Caller must check for combinatorial explosion before calling
+fn performCrossJoin(
+    left: *const DataFrame,
+    right: *const DataFrame,
+    allocator: std.mem.Allocator,
+) !DataFrame {
+    std.debug.assert(left.row_count > 0); // Pre-condition #1
+    std.debug.assert(right.row_count > 0); // Pre-condition #2
+
+    const result_rows_u64 = @as(u64, left.row_count) * @as(u64, right.row_count);
+    const result_rows: u32 = @intCast(result_rows_u64); // Safe due to check in crossJoin()
+
+    // Pre-allocate matches for Cartesian product
+    var matches = std.ArrayListUnmanaged(MatchResult){};
+    try matches.ensureTotalCapacity(allocator, result_rows);
+    defer matches.deinit(allocator);
+
+    // Generate all combinations
+    var left_idx: u32 = 0;
+    while (left_idx < left.row_count) : (left_idx += 1) {
+        var right_idx: u32 = 0;
+        while (right_idx < right.row_count) : (right_idx += 1) {
+            try matches.append(allocator, .{
+                .left_idx = left_idx,
+                .right_idx = right_idx,
+            });
+        }
+        std.debug.assert(right_idx == right.row_count); // Post-condition: inner loop
+    }
+    std.debug.assert(left_idx == left.row_count); // Post-condition: outer loop
+    std.debug.assert(matches.items.len == result_rows); // Post-condition: correct count
+
+    // Build result DataFrame (no join columns for cross join)
+    const result = try buildJoinResult(left, right, allocator, &[_][]const u8{}, &matches);
+
+    std.debug.assert(result.row_count == result_rows); // Post-condition
+    return result;
+}
+
+/// Performs full outer join - returns all rows from both DataFrames
+///
+/// **Algorithm**:
+/// 1. Perform inner join to get matching rows
+/// 2. Add unmatched left rows with null right columns
+/// 3. Add unmatched right rows with null left columns
+///
+/// **Performance**: O(n + m) where n = left rows, m = right rows
+fn performOuterJoin(
+    left: *const DataFrame,
+    right: *const DataFrame,
+    allocator: std.mem.Allocator,
+    join_cols: []const []const u8,
+) !DataFrame {
+    std.debug.assert(join_cols.len > 0); // Pre-condition #1
+
+    // Phase 1: Build hash table from right DataFrame
+    var hash_map = std.AutoHashMapUnmanaged(u64, std.ArrayListUnmanaged(*HashEntry)){};
+    try hash_map.ensureTotalCapacity(allocator, right.row_count);
+
+    var entry_batch: ?[]HashEntry = null;
+    defer {
+        var iter = hash_map.valueIterator();
+        var cleanup_idx: u32 = 0;
+        const MAX_CLEANUP_ITERATIONS: u32 = 10_000;
+        while (iter.next()) |list| : (cleanup_idx += 1) {
+            std.debug.assert(cleanup_idx < MAX_CLEANUP_ITERATIONS);
+            list.deinit(allocator);
+        }
+        std.debug.assert(cleanup_idx <= MAX_CLEANUP_ITERATIONS);
+        hash_map.deinit(allocator);
+        if (entry_batch) |batch| {
+            allocator.free(batch);
+        }
+    }
+
+    entry_batch = try buildHashTable(&hash_map, right, allocator, join_cols);
+
+    // Track which right rows have been matched
+    const matched_right = try allocator.alloc(bool, right.row_count);
+    defer allocator.free(matched_right);
+    @memset(matched_right, false);
+
+    // Phase 2: Collect matches (both matched and unmatched left rows)
+    var matches = std.ArrayListUnmanaged(MatchResult){};
+    try matches.ensureTotalCapacity(allocator, left.row_count + right.row_count);
+    defer matches.deinit(allocator);
+
+    try probeHashTableWithTracking(&hash_map, left, right, allocator, join_cols, &matches, matched_right);
+
+    // Phase 3: Add unmatched right rows
+    var right_idx: u32 = 0;
+    while (right_idx < right.row_count) : (right_idx += 1) {
+        if (!matched_right[right_idx]) {
+            try matches.append(allocator, .{
+                .left_idx = null, // No left match
+                .right_idx = right_idx,
+            });
+        }
+    }
+    std.debug.assert(right_idx == right.row_count); // Post-condition
+
+    // Phase 4: Build result DataFrame
+    const result = try buildJoinResult(left, right, allocator, join_cols, &matches);
+
+    std.debug.assert(result.row_count == matches.items.len); // Post-condition
+    return result;
+}
+
+/// Probes hash table and tracks which right rows have been matched (for outer join)
+fn probeHashTableWithTracking(
+    hash_map: *std.AutoHashMapUnmanaged(u64, std.ArrayListUnmanaged(*HashEntry)),
+    left: *const DataFrame,
+    right: *const DataFrame,
+    allocator: std.mem.Allocator,
+    join_cols: []const []const u8,
+    matches: *std.ArrayListUnmanaged(MatchResult),
+    matched_right: []bool,
+) !void {
+    std.debug.assert(join_cols.len > 0); // Pre-condition
+    std.debug.assert(matched_right.len == right.row_count); // Pre-condition
+
+    const left_cache = try ColumnCache.init(allocator, left, join_cols);
+    defer allocator.free(left_cache);
+
+    const right_cache = try ColumnCache.init(allocator, right, join_cols);
+    defer allocator.free(right_cache);
+
+    var left_idx: u32 = 0;
+    const max_rows = left.row_count;
+
+    while (left_idx < max_rows) : (left_idx += 1) {
+        const key = try JoinKey.compute(left_idx, left_cache);
+
+        if (hash_map.get(key.hash)) |entries| {
+            var found_match = false;
+
+            if (entries.items.len > MAX_MATCHES_PER_KEY) {
+                std.log.err("Join key has {} matches (limit {})", .{ entries.items.len, MAX_MATCHES_PER_KEY });
+                return error.TooManyMatchesPerKey;
+            }
+
+            var entry_idx: u32 = 0;
+            while (entry_idx < MAX_MATCHES_PER_KEY and entry_idx < entries.items.len) : (entry_idx += 1) {
+                const entry = entries.items[entry_idx];
+                if (try key.equals(entry.key, left_cache, right_cache)) {
+                    try matches.append(allocator, .{
+                        .left_idx = left_idx,
+                        .right_idx = entry.key.row_idx,
+                    });
+                    matched_right[entry.key.row_idx] = true; // Track matched right row
+                    found_match = true;
+                }
+            }
+
+            std.debug.assert(entry_idx == entries.items.len or entry_idx == MAX_MATCHES_PER_KEY);
+
+            // Add unmatched left row with null right
+            if (!found_match) {
+                try matches.append(allocator, .{
+                    .left_idx = left_idx,
+                    .right_idx = null,
+                });
+            }
+        } else {
+            // No match found - add left row with null right
+            try matches.append(allocator, .{
+                .left_idx = left_idx,
+                .right_idx = null,
+            });
+        }
+    }
+
+    std.debug.assert(left_idx == max_rows); // Post-condition
+}
+
 /// Core join implementation using hash join algorithm
 /// Routes to radix join for integer key optimization (2-3× speedup)
 fn performJoin(
@@ -434,8 +745,27 @@ fn performJoin(
     join_cols: []const []const u8,
     join_type: JoinType,
 ) !DataFrame {
-    std.debug.assert(join_cols.len > 0); // Pre-condition #1
-    std.debug.assert(left.row_count > 0 or join_type == .Left); // Pre-condition #2
+    // Cross join doesn't need join columns
+    std.debug.assert(join_cols.len > 0 or join_type == .Cross); // Pre-condition #1
+    std.debug.assert(left.row_count > 0 or join_type == .Left or join_type == .Right); // Pre-condition #2
+
+    // Handle cross join separately (Cartesian product)
+    if (join_type == .Cross) {
+        return performCrossJoin(left, right, allocator);
+    }
+
+    // Handle right join by swapping DataFrames and performing left join
+    if (join_type == .Right) {
+        const result = try performJoin(right, left, allocator, join_cols, .Left);
+        // Note: Column order is right columns first, then left columns
+        // This is correct for right join semantics
+        return result;
+    }
+
+    // Handle outer join
+    if (join_type == .Outer) {
+        return performOuterJoin(left, right, allocator, join_cols);
+    }
 
     // Route to radix join for integer keys (2-3× faster for Int64 single-column joins)
     // Decision criteria:
@@ -943,7 +1273,8 @@ fn isSequentialMatch(matches: *std.ArrayListUnmanaged(MatchResult)) bool {
     const MAX_CHECK: u32 = 1000; // Check first 1000 rows (99.9% accuracy)
 
     while (i < MAX_CHECK and i < matches.items.len) : (i += 1) {
-        if (matches.items[i].left_idx != i) {
+        const left_idx = matches.items[i].left_idx orelse return false; // Null left_idx means not sequential
+        if (left_idx != i) {
             return false;
         }
     }
@@ -1013,7 +1344,11 @@ fn copyColumnData(
                 inline for (0..batch_size) |offset| {
                     const match = matches.items[i + offset];
                     if (from_left) {
-                        dst_data[i + offset] = src_data[match.left_idx];
+                        if (match.left_idx) |left_idx| {
+                            dst_data[i + offset] = src_data[left_idx];
+                        } else {
+                            dst_data[i + offset] = 0; // Null value
+                        }
                     } else {
                         if (match.right_idx) |right_idx| {
                             dst_data[i + offset] = src_data[right_idx];
@@ -1028,11 +1363,12 @@ fn copyColumnData(
             // Process remaining elements
             while (i < MAX_ROWS and i < matches.items.len) : (i += 1) {
                 const match = matches.items[i];
-                const src_idx = if (from_left) match.left_idx else match.right_idx orelse {
-                    dst_data[i] = 0; // Null value for unmatched left join
-                    continue;
-                };
-                dst_data[i] = src_data[src_idx];
+                const src_idx = if (from_left) match.left_idx else match.right_idx;
+                if (src_idx) |idx| {
+                    dst_data[i] = src_data[idx];
+                } else {
+                    dst_data[i] = 0; // Null value for unmatched rows
+                }
             }
             std.debug.assert(i == matches.items.len); // Post-condition
             dst_col.length = @intCast(matches.items.len);
@@ -1061,7 +1397,11 @@ fn copyColumnData(
                 inline for (0..batch_size) |offset| {
                     const match = matches.items[i + offset];
                     if (from_left) {
-                        dst_data[i + offset] = src_data[match.left_idx];
+                        if (match.left_idx) |left_idx| {
+                            dst_data[i + offset] = src_data[left_idx];
+                        } else {
+                            dst_data[i + offset] = 0.0; // Null value
+                        }
                     } else {
                         if (match.right_idx) |right_idx| {
                             dst_data[i + offset] = src_data[right_idx];
@@ -1076,11 +1416,12 @@ fn copyColumnData(
             // Process remaining elements
             while (i < MAX_ROWS and i < matches.items.len) : (i += 1) {
                 const match = matches.items[i];
-                const src_idx = if (from_left) match.left_idx else match.right_idx orelse {
-                    dst_data[i] = 0.0; // Null value
-                    continue;
-                };
-                dst_data[i] = src_data[src_idx];
+                const src_idx = if (from_left) match.left_idx else match.right_idx;
+                if (src_idx) |idx| {
+                    dst_data[i] = src_data[idx];
+                } else {
+                    dst_data[i] = 0.0; // Null value for unmatched rows
+                }
             }
             std.debug.assert(i == matches.items.len); // Post-condition
             dst_col.length = @intCast(matches.items.len);
@@ -1109,7 +1450,11 @@ fn copyColumnData(
                 inline for (0..batch_size) |offset| {
                     const match = matches.items[i + offset];
                     if (from_left) {
-                        dst_data[i + offset] = src_data[match.left_idx];
+                        if (match.left_idx) |left_idx| {
+                            dst_data[i + offset] = src_data[left_idx];
+                        } else {
+                            dst_data[i + offset] = false; // Null value
+                        }
                     } else {
                         if (match.right_idx) |right_idx| {
                             dst_data[i + offset] = src_data[right_idx];
@@ -1124,11 +1469,12 @@ fn copyColumnData(
             // Process remaining elements
             while (i < MAX_ROWS and i < matches.items.len) : (i += 1) {
                 const match = matches.items[i];
-                const src_idx = if (from_left) match.left_idx else match.right_idx orelse {
-                    dst_data[i] = false; // Null value
-                    continue;
-                };
-                dst_data[i] = src_data[src_idx];
+                const src_idx = if (from_left) match.left_idx else match.right_idx;
+                if (src_idx) |idx| {
+                    dst_data[i] = src_data[idx];
+                } else {
+                    dst_data[i] = false; // Null value for unmatched rows
+                }
             }
             std.debug.assert(i == matches.items.len); // Post-condition
             dst_col.length = @intCast(matches.items.len);
@@ -1142,12 +1488,13 @@ fn copyColumnData(
             var i: u32 = 0;
             while (i < MAX_ROWS and i < matches.items.len) : (i += 1) {
                 const match = matches.items[i];
-                const src_idx = if (from_left) match.left_idx else match.right_idx orelse {
+                const src_idx = if (from_left) match.left_idx else match.right_idx;
+                if (src_idx) |idx| {
+                    const str = src_string_col.get(idx);
+                    try dst_string_col.append(allocator, str);
+                } else {
                     try dst_string_col.append(allocator, ""); // Empty string for null
-                    continue;
-                };
-                const str = src_string_col.get(src_idx);
-                try dst_string_col.append(allocator, str);
+                }
             }
             std.debug.assert(i == matches.items.len); // Post-condition
         },
@@ -1165,7 +1512,8 @@ fn copyColumnData(
             var i: u32 = 0;
             while (i < MAX_ROWS and i < matches.items.len) : (i += 1) {
                 const match = matches.items[i];
-                src_indices[i] = if (from_left) match.left_idx else match.right_idx orelse 0; // Use 0 for null (will be first category)
+                const src_idx = if (from_left) match.left_idx else match.right_idx;
+                src_indices[i] = if (src_idx) |idx| idx else 0; // Use 0 for null (will be first category)
             }
             std.debug.assert(i == matches.items.len); // Post-condition
 

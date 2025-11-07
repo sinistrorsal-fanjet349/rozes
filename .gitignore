@@ -49,3 +49,8 @@ docs/api/
 *.tmp
 *.temp
 .cache/
+
+# Project documentation (local only)
+CLAUDE.md
+src/CLAUDE.md
+.claude/

@@ -13,9 +13,11 @@ const ValueType = rozes.ValueType;
 const string_ops = @import("core/string_ops.zig");
 const operations = @import("core/operations.zig");
 const window_ops = @import("core/window_ops.zig");
-const arrow_ipc = @import("arrow/ipc.zig");
-const query_plan = @import("core/query_plan.zig");
-const LazyDataFrame = query_plan.LazyDataFrame;
+
+// Additional imports for new functionality
+const ArrayList = std.ArrayList;
+const Allocator = std.mem.Allocator;
+const SortSpec = @import("core/sort.zig").SortSpec;
 
 // Conditional logging: only enabled in Debug mode
 const enable_logging = builtin.mode == .Debug;
@@ -1206,6 +1208,247 @@ export fn rozes_sort(
     return new_handle;
 }
 
+/// Sort DataFrame by multiple columns with per-column sort order
+///
+/// Parameters:
+///   - handle: DataFrame handle
+///   - sort_specs_json_ptr: JSON array of sort specs: [{"column": "name", "order": "asc"}, ...]
+///   - sort_specs_json_len: Length of JSON string
+///
+/// Returns: Handle to new sorted DataFrame
+///
+/// JSON Format:
+///   [
+///     {"column": "age", "order": "desc"},
+///     {"column": "name", "order": "asc"}
+///   ]
+///
+/// Order values: "asc" or "desc"
+export fn rozes_sortBy(
+    handle: i32,
+    sort_specs_json_ptr: [*]const u8,
+    sort_specs_json_len: u32,
+) i32 {
+    std.debug.assert(handle >= 0);
+    std.debug.assert(sort_specs_json_len > 0);
+
+    const df = registry.get(handle) orelse {
+        return @intFromEnum(ErrorCode.InvalidHandle);
+    };
+
+    const sort_specs_json = sort_specs_json_ptr[0..sort_specs_json_len];
+    const allocator = getAllocator();
+
+    // Parse JSON array of sort specs
+    var specs = parseSortSpecs(sort_specs_json, allocator) catch |err| {
+        return @intFromEnum(ErrorCode.fromError(err));
+    };
+    defer {
+        for (specs.items) |spec| {
+            allocator.free(spec.column);
+        }
+        specs.deinit(allocator);
+    }
+
+    if (specs.items.len == 0) {
+        return @intFromEnum(ErrorCode.InvalidFormat);
+    }
+
+    // Import sort module
+    const sort_mod = @import("core/sort.zig");
+
+    const new_df_ptr = allocator.create(DataFrame) catch {
+        return @intFromEnum(ErrorCode.OutOfMemory);
+    };
+
+    new_df_ptr.* = sort_mod.sortBy(df, allocator, specs.items) catch |err| {
+        allocator.destroy(new_df_ptr);
+        logError("Sort failed: {}", .{err});
+        return @intFromEnum(ErrorCode.fromError(err));
+    };
+
+    const new_handle = registry.register(new_df_ptr) catch {
+        new_df_ptr.deinit();
+        allocator.destroy(new_df_ptr);
+        return @intFromEnum(ErrorCode.TooManyDataFrames);
+    };
+
+    std.debug.assert(new_handle >= 0);
+    std.debug.assert(new_handle < MAX_DATAFRAMES);
+
+    return new_handle;
+}
+
+/// Parse JSON array of sort specs
+/// Format: [{"column": "age", "order": "desc"}, {"column": "name", "order": "asc"}]
+fn parseSortSpecs(json: []const u8, allocator: Allocator) !ArrayList(SortSpec) {
+    std.debug.assert(json.len > 0); // Pre-condition #1: Non-empty JSON
+
+    const MAX_PARSE_ITERATIONS: u32 = 10_000; // Max specs in array
+    const MAX_FIELD_LENGTH: u32 = 1_000_000; // Max single field length
+
+    var specs = ArrayList(SortSpec).initCapacity(allocator, 4) catch {
+        return error.OutOfMemory;
+    };
+    errdefer {
+        for (specs.items) |spec| {
+            allocator.free(spec.column);
+        }
+        specs.deinit(allocator);
+    }
+
+    var i: u32 = 0;
+    var iterations: u32 = 0;
+
+    // Skip whitespace and opening '['
+    while (i < json.len and iterations < MAX_PARSE_ITERATIONS) : (iterations += 1) {
+        if (json[i] == '[') {
+            i += 1;
+            break;
+        }
+        if (json[i] != ' ' and json[i] != '\t' and json[i] != '\n' and json[i] != '\r') {
+            return error.InvalidFormat;
+        }
+        i += 1;
+    }
+
+    if (iterations >= MAX_PARSE_ITERATIONS or i >= json.len) {
+        return error.InvalidFormat;
+    }
+
+    const SortOrder = @import("core/sort.zig").SortOrder;
+
+    // Parse array elements
+    iterations = 0;
+    while (i < json.len and iterations < MAX_PARSE_ITERATIONS) : (iterations += 1) {
+        // Skip whitespace
+        while (i < json.len and (json[i] == ' ' or json[i] == '\t' or json[i] == '\n' or json[i] == '\r')) {
+            i += 1;
+        }
+
+        if (i >= json.len) break;
+
+        // Check for end of array
+        if (json[i] == ']') {
+            break;
+        }
+
+        // Expect '{'
+        if (json[i] != '{') {
+            return error.InvalidFormat;
+        }
+        i += 1;
+
+        var column_name: ?[]const u8 = null;
+        var order: ?SortOrder = null;
+
+        // Parse object fields
+        var field_iterations: u32 = 0;
+        while (i < json.len and field_iterations < MAX_PARSE_ITERATIONS) : (field_iterations += 1) {
+            // Skip whitespace
+            while (i < json.len and (json[i] == ' ' or json[i] == '\t' or json[i] == '\n' or json[i] == '\r')) {
+                i += 1;
+            }
+
+            if (i >= json.len) break;
+
+            // Check for end of object
+            if (json[i] == '}') {
+                i += 1;
+                break;
+            }
+
+            // Expect '"'
+            if (json[i] != '"') {
+                if (json[i] == ',') {
+                    i += 1;
+                    continue;
+                }
+                return error.InvalidFormat;
+            }
+            i += 1;
+
+            // Parse field name
+            const field_start = i;
+            var field_len: u32 = 0;
+            while (i < json.len and json[i] != '"' and field_len < MAX_FIELD_LENGTH) : ({
+                i += 1;
+                field_len += 1;
+            }) {}
+
+            if (field_len >= MAX_FIELD_LENGTH) {
+                return error.FieldTooLarge;
+            }
+
+            const field_name = json[field_start..i];
+            i += 1; // Skip closing '"'
+
+            // Skip whitespace and ':'
+            while (i < json.len and (json[i] == ' ' or json[i] == '\t' or json[i] == '\n' or json[i] == '\r' or json[i] == ':')) {
+                i += 1;
+            }
+
+            // Expect '"' for value
+            if (i >= json.len or json[i] != '"') {
+                return error.InvalidFormat;
+            }
+            i += 1;
+
+            // Parse field value
+            const value_start = i;
+            var value_len: u32 = 0;
+            while (i < json.len and json[i] != '"' and value_len < MAX_FIELD_LENGTH) : ({
+                i += 1;
+                value_len += 1;
+            }) {}
+
+            if (value_len >= MAX_FIELD_LENGTH) {
+                return error.FieldTooLarge;
+            }
+
+            const field_value = json[value_start..i];
+            i += 1; // Skip closing '"'
+
+            // Process field
+            if (std.mem.eql(u8, field_name, "column")) {
+                const owned_name = try allocator.alloc(u8, field_value.len);
+                @memcpy(owned_name, field_value);
+                column_name = owned_name;
+            } else if (std.mem.eql(u8, field_name, "order")) {
+                if (std.mem.eql(u8, field_value, "asc")) {
+                    order = .Ascending;
+                } else if (std.mem.eql(u8, field_value, "desc")) {
+                    order = .Descending;
+                } else {
+                    return error.InvalidFormat;
+                }
+            }
+        }
+
+        std.debug.assert(field_iterations <= MAX_PARSE_ITERATIONS); // Post-loop assertion
+
+        // Validate spec
+        if (column_name == null or order == null) {
+            if (column_name) |name| allocator.free(name);
+            return error.InvalidFormat;
+        }
+
+        try specs.append(allocator, SortSpec{
+            .column = column_name.?,
+            .order = order.?,
+        });
+
+        // Skip whitespace and comma
+        while (i < json.len and (json[i] == ' ' or json[i] == '\t' or json[i] == '\n' or json[i] == '\r' or json[i] == ',')) {
+            i += 1;
+        }
+    }
+
+    std.debug.assert(iterations <= MAX_PARSE_ITERATIONS); // Post-loop assertion
+
+    return specs;
+}
+
 /// Filter DataFrame by simple numeric comparison
 /// operator: 0 = equal, 1 = not equal, 2 = greater than, 3 = less than, 4 = greater or equal, 5 = less or equal
 /// Returns handle to new filtered DataFrame
@@ -1451,8 +1694,8 @@ export fn rozes_groupByAgg(
 ///   - left_handle: Left DataFrame handle
 ///   - right_handle: Right DataFrame handle
 ///   - join_cols_json_ptr: Pointer to JSON array of column names: ["col1", "col2"]
-///   - join_cols_json_len: Length of JSON string
-///   - join_type: Join type (0=inner, 1=left)
+///   - join_cols_json_len: Length of JSON string (0 for cross join)
+///   - join_type: Join type (0=inner, 1=left, 2=right, 3=outer, 4=cross)
 ///
 /// Returns: Handle to new joined DataFrame
 export fn rozes_join(
@@ -1462,10 +1705,9 @@ export fn rozes_join(
     join_cols_json_len: u32,
     join_type: u8,
 ) i32 {
-    std.debug.assert(left_handle >= 0);
-    std.debug.assert(right_handle >= 0);
-    std.debug.assert(join_cols_json_len > 0);
-    std.debug.assert(join_type <= 1); // 0=inner, 1=left
+    std.debug.assert(left_handle >= 0); // Pre-condition #1
+    std.debug.assert(right_handle >= 0); // Pre-condition #2
+    std.debug.assert(join_type <= 4); // Pre-condition #3: 0=inner, 1=left, 2=right, 3=outer, 4=cross
 
     const left_df = registry.get(left_handle) orelse {
         return @intFromEnum(ErrorCode.InvalidHandle);
@@ -1475,8 +1717,40 @@ export fn rozes_join(
         return @intFromEnum(ErrorCode.InvalidHandle);
     };
 
-    const join_cols_json = join_cols_json_ptr[0..join_cols_json_len];
     const allocator = getAllocator();
+
+    // Import join module
+    const join_mod = @import("core/join.zig");
+
+    // Cross join doesn't need join columns
+    if (join_type == 4) {
+        // Cross join: No join columns needed
+        const new_df_ptr = allocator.create(DataFrame) catch {
+            return @intFromEnum(ErrorCode.OutOfMemory);
+        };
+
+        new_df_ptr.* = join_mod.crossJoin(left_df, right_df, allocator) catch |err| {
+            allocator.destroy(new_df_ptr);
+            logError("Cross join failed: {}", .{err});
+            return @intFromEnum(ErrorCode.fromError(err));
+        };
+
+        const new_handle = registry.register(new_df_ptr) catch {
+            new_df_ptr.deinit();
+            allocator.destroy(new_df_ptr);
+            return @intFromEnum(ErrorCode.TooManyDataFrames);
+        };
+
+        std.debug.assert(new_handle >= 0);
+        std.debug.assert(new_handle < MAX_DATAFRAMES);
+
+        return new_handle;
+    }
+
+    // All other join types need join columns
+    std.debug.assert(join_cols_json_len > 0); // Pre-condition #4: Need join columns for non-cross joins
+
+    const join_cols_json = join_cols_json_ptr[0..join_cols_json_len];
 
     // Parse JSON array of column names: ["col1", "col2"]
     // Use helper function for JSON parsing
@@ -1494,27 +1768,38 @@ export fn rozes_join(
         return @intFromEnum(ErrorCode.InvalidFormat);
     }
 
-    // Import join module
-    const join_mod = @import("core/join.zig");
-
     // Perform join
     const new_df_ptr = allocator.create(DataFrame) catch {
         return @intFromEnum(ErrorCode.OutOfMemory);
     };
 
     new_df_ptr.* = blk: {
-        if (join_type == 0) {
-            break :blk join_mod.innerJoin(left_df, right_df, allocator, col_names.items) catch |err| {
+        switch (join_type) {
+            0 => break :blk join_mod.innerJoin(left_df, right_df, allocator, col_names.items) catch |err| {
                 allocator.destroy(new_df_ptr);
-                logError("Join failed: {}", .{err});
+                logError("Inner join failed: {}", .{err});
                 return @intFromEnum(ErrorCode.fromError(err));
-            };
-        } else {
-            break :blk join_mod.leftJoin(left_df, right_df, allocator, col_names.items) catch |err| {
+            },
+            1 => break :blk join_mod.leftJoin(left_df, right_df, allocator, col_names.items) catch |err| {
                 allocator.destroy(new_df_ptr);
-                logError("Join failed: {}", .{err});
+                logError("Left join failed: {}", .{err});
                 return @intFromEnum(ErrorCode.fromError(err));
-            };
+            },
+            2 => break :blk join_mod.rightJoin(left_df, right_df, allocator, col_names.items) catch |err| {
+                allocator.destroy(new_df_ptr);
+                logError("Right join failed: {}", .{err});
+                return @intFromEnum(ErrorCode.fromError(err));
+            },
+            3 => break :blk join_mod.outerJoin(left_df, right_df, allocator, col_names.items) catch |err| {
+                allocator.destroy(new_df_ptr);
+                logError("Outer join failed: {}", .{err});
+                return @intFromEnum(ErrorCode.fromError(err));
+            },
+            else => {
+                allocator.destroy(new_df_ptr);
+                logError("Invalid join type: {}", .{join_type});
+                return @intFromEnum(ErrorCode.InvalidFormat);
+            },
         }
     };
 
@@ -2755,201 +3040,6 @@ export fn rozes_str_endsWith(
 // Advanced Aggregations (Phase 3 - Milestone 1.3.0)
 // ============================================================================
 
-// Helper Functions
-// ============================================================================
-
-/// Copy JSON buffer to output buffer with null termination
-///
-/// Args:
-///   - json_buffer: ArrayList containing JSON data
-///   - out_ptr: Output buffer pointer
-///   - out_size: Output buffer size
-///
-/// Returns: ErrorCode.Success or InvalidFormat if buffer too small
-///
-/// Tiger Style: Explicit bounds check, post-condition assertion
-fn copyJSONToOutputBuffer(
-    json_buffer: std.ArrayList(u8),
-    out_ptr: [*]u8,
-    out_size: u32,
-) ErrorCode {
-    std.debug.assert(json_buffer.items.len > 0); // Pre-condition: Non-empty JSON
-    std.debug.assert(out_size > 0); // Pre-condition: Valid buffer
-
-    if (json_buffer.items.len >= out_size) {
-        logError("copyJSONToOutputBuffer: JSON too large ({} bytes, buffer {} bytes)", .{ json_buffer.items.len, out_size });
-        return .InvalidFormat;
-    }
-
-    const out_slice = out_ptr[0..out_size];
-    @memcpy(out_slice[0..json_buffer.items.len], json_buffer.items);
-    out_slice[json_buffer.items.len] = 0; // Null-terminate
-
-    std.debug.assert(out_slice[json_buffer.items.len] == 0); // Post-condition
-    return .Success;
-}
-
-/// Convert value counts DataFrame to JSON: {"value1": count1, "value2": count2, ...}
-///
-/// Args:
-///   - result_df: DataFrame with "value" and "count" columns
-///   - allocator: Memory allocator
-///   - out_json_ptr: Output buffer
-///   - out_json_size: Output buffer size
-///
-/// Returns: ErrorCode.Success or error code
-///
-/// Performance: O(n) where n = unique values (bounded to 10K)
-/// Tiger Style: Bounded loop, MAX constant, post-loop assertion
-fn valueCountsToJSON(
-    result_df: *const DataFrame,
-    allocator: std.mem.Allocator,
-    out_json_ptr: [*]u8,
-    out_json_size: u32,
-) ErrorCode {
-    std.debug.assert(result_df.row_count > 0); // Pre-condition
-
-    const value_col = result_df.column("value") orelse {
-        logError("valueCountsToJSON: Missing 'value' column", .{});
-        return .ColumnNotFound;
-    };
-    const count_col = result_df.column("count") orelse {
-        logError("valueCountsToJSON: Missing 'count' column", .{});
-        return .ColumnNotFound;
-    };
-
-    var json_buffer = std.ArrayList(u8).initCapacity(allocator, 512) catch {
-        return .OutOfMemory;
-    };
-    defer json_buffer.deinit(allocator);
-
-    json_buffer.append(allocator, '{') catch {
-        return .OutOfMemory;
-    };
-
-    const MAX_VALUE_COUNT_ROWS: u32 = 10_000;
-    var i: u32 = 0;
-    while (i < result_df.row_count and i < MAX_VALUE_COUNT_ROWS) : (i += 1) {
-        if (i > 0) {
-            json_buffer.appendSlice(allocator, ",") catch return .OutOfMemory;
-        }
-
-        // Write key (value) with quotes
-        json_buffer.append(allocator, '"') catch return .OutOfMemory;
-
-        const val = value_col.get(i) catch return .IndexOutOfBounds;
-        const val_str = switch (val) {
-            .String => |s| s,
-            .Int64 => |n| blk: {
-                var buf: [32]u8 = undefined;
-                break :blk std.fmt.bufPrint(&buf, "{}", .{n}) catch return .InvalidFormat;
-            },
-            .Float64 => |f| blk: {
-                var buf: [32]u8 = undefined;
-                break :blk std.fmt.bufPrint(&buf, "{d}", .{f}) catch return .InvalidFormat;
-            },
-            .Bool => |b| if (b) "true" else "false",
-            .Categorical => |s| s,
-            .Null => "null",
-        };
-
-        json_buffer.appendSlice(allocator, val_str) catch return .OutOfMemory;
-        json_buffer.appendSlice(allocator, "\":") catch return .OutOfMemory;
-
-        // Write value (count)
-        const count_val = count_col.get(i) catch return .IndexOutOfBounds;
-        const count = switch (count_val) {
-            .Int64 => |n| n,
-            .Float64 => |f| @as(i64, @intFromFloat(f)),
-            else => return .TypeMismatch,
-        };
-
-        var count_buf: [32]u8 = undefined;
-        const count_str = std.fmt.bufPrint(&count_buf, "{}", .{count}) catch return .InvalidFormat;
-        json_buffer.appendSlice(allocator, count_str) catch return .OutOfMemory;
-    }
-    std.debug.assert(i <= MAX_VALUE_COUNT_ROWS); // Post-loop assertion
-
-    json_buffer.append(allocator, '}') catch return .OutOfMemory;
-
-    return copyJSONToOutputBuffer(json_buffer, out_json_ptr, out_json_size);
-}
-
-/// Convert correlation matrix to JSON: {"col1": {"col1": 1.0, "col2": 0.5}, ...}
-///
-/// Args:
-///   - matrix: Correlation matrix (2D array)
-///   - col_names: Column names
-///   - allocator: Memory allocator
-///   - out_json_ptr: Output buffer
-///   - out_json_size: Output buffer size
-///
-/// Returns: ErrorCode.Success or error code
-///
-/// Performance: O(n²) where n = columns (bounded to 100)
-/// Tiger Style: Bounded loops, MAX constant, post-loop assertions
-fn matrixToJSON(
-    matrix: [][]f64,
-    col_names: []const []const u8,
-    allocator: std.mem.Allocator,
-    out_json_ptr: [*]u8,
-    out_json_size: u32,
-) ErrorCode {
-    std.debug.assert(matrix.len > 0); // Pre-condition
-    std.debug.assert(matrix.len == col_names.len); // Pre-condition: Matching dimensions
-
-    var json_buffer = std.ArrayList(u8).initCapacity(allocator, 1024) catch {
-        return .OutOfMemory;
-    };
-    defer json_buffer.deinit(allocator);
-
-    json_buffer.append(allocator, '{') catch return .OutOfMemory;
-
-    const n: u32 = @intCast(matrix.len);
-    const MAX_CORR_COLS: u32 = 100;
-    var row_idx: u32 = 0;
-    while (row_idx < n and row_idx < MAX_CORR_COLS) : (row_idx += 1) {
-        if (row_idx > 0) {
-            json_buffer.append(allocator, ',') catch return .OutOfMemory;
-        }
-
-        // Row name with nested object
-        json_buffer.append(allocator, '"') catch return .OutOfMemory;
-        json_buffer.appendSlice(allocator, col_names[row_idx]) catch return .OutOfMemory;
-        json_buffer.appendSlice(allocator, "\":{") catch return .OutOfMemory;
-
-        // Row values
-        var col_idx: u32 = 0;
-        while (col_idx < n and col_idx < MAX_CORR_COLS) : (col_idx += 1) {
-            if (col_idx > 0) {
-                json_buffer.append(allocator, ',') catch return .OutOfMemory;
-            }
-
-            // Column name and correlation value
-            json_buffer.append(allocator, '"') catch return .OutOfMemory;
-            json_buffer.appendSlice(allocator, col_names[col_idx]) catch return .OutOfMemory;
-            json_buffer.appendSlice(allocator, "\":") catch return .OutOfMemory;
-
-            var val_buf: [32]u8 = undefined;
-            const val_str = std.fmt.bufPrint(&val_buf, "{d:.6}", .{matrix[row_idx][col_idx]}) catch {
-                return .InvalidFormat;
-            };
-            json_buffer.appendSlice(allocator, val_str) catch return .OutOfMemory;
-        }
-        std.debug.assert(col_idx == n or col_idx == MAX_CORR_COLS); // Post-loop assertion
-
-        json_buffer.append(allocator, '}') catch return .OutOfMemory;
-    }
-    std.debug.assert(row_idx == n or row_idx == MAX_CORR_COLS); // Post-loop assertion
-
-    json_buffer.append(allocator, '}') catch return .OutOfMemory;
-
-    return copyJSONToOutputBuffer(json_buffer, out_json_ptr, out_json_size);
-}
-
-// Exported Functions
-// ============================================================================
-
 /// Compute median of a numeric column
 ///
 /// Args:
@@ -3029,13 +3119,12 @@ export fn rozes_quantile(
 ///   - handle: DataFrame handle
 ///   - col_name_ptr: Pointer to column name string
 ///   - col_name_len: Length of column name
-///   - out_json_ptr: Output buffer for JSON result
-///   - out_json_size: Size of output buffer
+///   - normalize: If true, return proportions instead of counts
+///   - sort: If true, sort by count descending
 ///
-/// Returns: ErrorCode.Success or error code
+/// Returns: New DataFrame handle with [value, count] columns, or error code
 ///
 /// Performance: O(n) for counting, O(k log k) for sorting (k = unique values)
-/// Tiger Style: Bounded execution, delegates to helper functions
 export fn rozes_valueCounts(
     handle: i32,
     col_name_ptr: [*]const u8,
@@ -3072,9 +3161,118 @@ export fn rozes_valueCounts(
     };
     defer result_df.deinit();
 
-    // Delegate JSON conversion to helper
-    const err_code = valueCountsToJSON(&result_df, allocator, out_json_ptr, out_json_size);
-    return @intFromEnum(err_code);
+    // Convert DataFrame to JSON
+    // Expected format: {"value1": count1, "value2": count2, ...}
+    const value_col = result_df.column("value") orelse {
+        logError("valueCounts: Result missing 'value' column", .{});
+        return @intFromEnum(ErrorCode.ColumnNotFound);
+    };
+    const count_col = result_df.column("count") orelse {
+        logError("valueCounts: Result missing 'count' column", .{});
+        return @intFromEnum(ErrorCode.ColumnNotFound);
+    };
+
+    var json_buffer = std.ArrayList(u8).initCapacity(allocator, 512) catch {
+        return @intFromEnum(ErrorCode.OutOfMemory);
+    };
+    defer json_buffer.deinit(allocator);
+
+    json_buffer.append(allocator, '{') catch {
+        return @intFromEnum(ErrorCode.OutOfMemory);
+    };
+
+    const MAX_VALUE_COUNT_ROWS: u32 = 10_000;
+    var i: u32 = 0;
+    while (i < result_df.row_count and i < MAX_VALUE_COUNT_ROWS) : (i += 1) {
+        if (i > 0) {
+            json_buffer.appendSlice(allocator, ",") catch {
+                return @intFromEnum(ErrorCode.OutOfMemory);
+            };
+        }
+
+        // Write key (value)
+        json_buffer.append(allocator, '"') catch {
+            return @intFromEnum(ErrorCode.OutOfMemory);
+        };
+
+        const val = value_col.get(i) catch |err| {
+            logError("valueCounts: Failed to get value at index {}: {}", .{ i, err });
+            return @intFromEnum(ErrorCode.IndexOutOfBounds);
+        };
+        const val_str = switch (val) {
+            .String => |s| s,
+            .Int64 => |n| blk: {
+                var buf: [32]u8 = undefined;
+                break :blk std.fmt.bufPrint(&buf, "{}", .{n}) catch {
+                    logError("valueCounts: Failed to format Int64", .{});
+                    return @intFromEnum(ErrorCode.InvalidFormat);
+                };
+            },
+            .Float64 => |f| blk: {
+                var buf: [32]u8 = undefined;
+                break :blk std.fmt.bufPrint(&buf, "{d}", .{f}) catch {
+                    logError("valueCounts: Failed to format Float64", .{});
+                    return @intFromEnum(ErrorCode.InvalidFormat);
+                };
+            },
+            .Bool => |b| if (b) "true" else "false",
+            .Categorical => |s| s,
+            .Null => "null",
+        };
+
+        json_buffer.appendSlice(allocator, val_str) catch {
+            return @intFromEnum(ErrorCode.OutOfMemory);
+        };
+        json_buffer.append(allocator, '"') catch {
+            return @intFromEnum(ErrorCode.OutOfMemory);
+        };
+
+        // Write colon
+        json_buffer.append(allocator, ':') catch {
+            return @intFromEnum(ErrorCode.OutOfMemory);
+        };
+
+        // Write value (count)
+        const count_val = count_col.get(i) catch |err| {
+            logError("valueCounts: Failed to get count at index {}: {}", .{ i, err });
+            return @intFromEnum(ErrorCode.IndexOutOfBounds);
+        };
+        const count = switch (count_val) {
+            .Int64 => |n| n,
+            .Float64 => |f| @as(i64, @intFromFloat(f)),
+            else => {
+                logError("valueCounts: Count column must be Int64", .{});
+                return @intFromEnum(ErrorCode.TypeMismatch);
+            },
+        };
+
+        var count_buf: [32]u8 = undefined;
+        const count_str = std.fmt.bufPrint(&count_buf, "{}", .{count}) catch {
+            logError("valueCounts: Failed to format count", .{});
+            return @intFromEnum(ErrorCode.InvalidFormat);
+        };
+        json_buffer.appendSlice(allocator, count_str) catch {
+            return @intFromEnum(ErrorCode.OutOfMemory);
+        };
+    }
+    std.debug.assert(i <= MAX_VALUE_COUNT_ROWS); // Post-loop assertion
+
+    json_buffer.append(allocator, '}') catch {
+        return @intFromEnum(ErrorCode.OutOfMemory);
+    };
+
+    // Copy to output buffer
+    if (json_buffer.items.len >= out_json_size) {
+        logError("valueCounts: JSON result too large ({} bytes, buffer {} bytes)", .{ json_buffer.items.len, out_json_size });
+        return @intFromEnum(ErrorCode.InvalidFormat);
+    }
+
+    const out_slice = out_json_ptr[0..out_json_size];
+    @memcpy(out_slice[0..json_buffer.items.len], json_buffer.items);
+    out_slice[json_buffer.items.len] = 0; // Null-terminate
+
+    std.debug.assert(out_slice[json_buffer.items.len] == 0); // Post-condition: Null-terminated
+    return @intFromEnum(ErrorCode.Success);
 }
 
 /// Compute correlation matrix for selected columns
@@ -3091,7 +3289,6 @@ export fn rozes_valueCounts(
 /// Note: Matrix is returned as JSON object: {"col1": {"col1": 1.0, "col2": 0.5}, ...}
 ///
 /// Performance: O(n²m) where n=columns, m=rows
-/// Tiger Style: Bounded execution, delegates to helper functions
 export fn rozes_corrMatrix(
     handle: i32,
     col_names_json_ptr: [*]const u8,
@@ -3109,7 +3306,7 @@ export fn rozes_corrMatrix(
 
     const allocator = getAllocator();
 
-    // Parse column names (from JSON or use all numeric columns)
+    // Parse JSON array of column names (or use all numeric columns if empty)
     var col_names = std.ArrayList([]const u8).initCapacity(allocator, 10) catch {
         return @intFromEnum(ErrorCode.OutOfMemory);
     };
@@ -3121,25 +3318,64 @@ export fn rozes_corrMatrix(
     }
 
     if (col_names_json_len > 0) {
-        // Parse JSON array using existing helper
         const json_str = col_names_json_ptr[0..col_names_json_len];
-        var parsed_names = parseJSONStringArray(json_str, allocator) catch {
-            logError("corrMatrix: Failed to parse JSON column names", .{});
-            return @intFromEnum(ErrorCode.InvalidFormat);
-        };
-        defer parsed_names.deinit(allocator);
 
-        // Transfer ownership to col_names
-        for (parsed_names.items) |name| {
-            col_names.append(allocator, name) catch {
-                // Cleanup on failure
-                allocator.free(name);
+        // Simple JSON array parsing: ["col1","col2",...]
+        var i: u32 = 0;
+        const MAX_PARSE_ITERATIONS: u32 = 10_000;
+        var iterations: u32 = 0;
+
+        while (i < json_str.len and iterations < MAX_PARSE_ITERATIONS) : (iterations += 1) {
+            // Skip whitespace and delimiters
+            while (i < json_str.len and (json_str[i] == ' ' or json_str[i] == '[' or json_str[i] == ']' or json_str[i] == ',')) {
+                i += 1;
+            }
+
+            if (i >= json_str.len) break;
+
+            // Expect opening quote
+            if (json_str[i] != '"') {
+                logError("corrMatrix: Invalid JSON at position {}", .{i});
+                return @intFromEnum(ErrorCode.InvalidFormat);
+            }
+            i += 1;
+
+            // Find closing quote
+            const name_start = i;
+            const MAX_FIELD_LENGTH: u32 = 1000;
+            var field_len: u32 = 0;
+            while (i < json_str.len and json_str[i] != '"' and field_len < MAX_FIELD_LENGTH) : ({
+                i += 1;
+                field_len += 1;
+            }) {}
+
+            if (field_len >= MAX_FIELD_LENGTH) {
+                logError("corrMatrix: Column name too long (>{} chars)", .{MAX_FIELD_LENGTH});
+                return @intFromEnum(ErrorCode.InvalidFormat);
+            }
+
+            if (i >= json_str.len) {
+                logError("corrMatrix: Unterminated string in JSON", .{});
+                return @intFromEnum(ErrorCode.InvalidFormat);
+            }
+
+            const name_slice = json_str[name_start..i];
+            const name_copy = allocator.dupe(u8, name_slice) catch {
                 return @intFromEnum(ErrorCode.OutOfMemory);
             };
+
+            col_names.append(allocator, name_copy) catch {
+                allocator.free(name_copy);
+                return @intFromEnum(ErrorCode.OutOfMemory);
+            };
+
+            i += 1; // Skip closing quote
         }
 
+        std.debug.assert(iterations <= MAX_PARSE_ITERATIONS); // Post-loop assertion
+
         if (col_names.items.len == 0) {
-            logError("corrMatrix: No column names in JSON", .{});
+            logError("corrMatrix: No column names provided in JSON", .{});
             return @intFromEnum(ErrorCode.InvalidFormat);
         }
     } else {
@@ -3166,7 +3402,6 @@ export fn rozes_corrMatrix(
         }
     }
 
-    // Compute correlation matrix
     const stats_mod = @import("core/stats.zig");
     const matrix = stats_mod.corrMatrix(df, allocator, col_names.items) catch |err| {
         logError("corrMatrix: Failed: {}", .{err});
@@ -3179,9 +3414,91 @@ export fn rozes_corrMatrix(
         allocator.free(matrix);
     }
 
-    // Delegate JSON conversion to helper
-    const err_code = matrixToJSON(matrix, col_names.items, allocator, out_json_ptr, out_json_size);
-    return @intFromEnum(err_code);
+    // Convert matrix to JSON: {"col1": {"col1": 1.0, "col2": 0.5}, ...}
+    var json_buffer = std.ArrayList(u8).initCapacity(allocator, 1024) catch {
+        return @intFromEnum(ErrorCode.OutOfMemory);
+    };
+    defer json_buffer.deinit(allocator);
+
+    json_buffer.append(allocator, '{') catch {
+        return @intFromEnum(ErrorCode.OutOfMemory);
+    };
+
+    const n: u32 = @intCast(matrix.len);
+    const MAX_CORR_COLS: u32 = 100;
+    var row_idx: u32 = 0;
+    while (row_idx < n and row_idx < MAX_CORR_COLS) : (row_idx += 1) {
+        if (row_idx > 0) {
+            json_buffer.append(allocator, ',') catch {
+                return @intFromEnum(ErrorCode.OutOfMemory);
+            };
+        }
+
+        // Row name
+        json_buffer.append(allocator, '"') catch {
+            return @intFromEnum(ErrorCode.OutOfMemory);
+        };
+        json_buffer.appendSlice(allocator, col_names.items[row_idx]) catch {
+            return @intFromEnum(ErrorCode.OutOfMemory);
+        };
+        json_buffer.appendSlice(allocator, "\":{") catch {
+            return @intFromEnum(ErrorCode.OutOfMemory);
+        };
+
+        // Row values
+        var col_idx: u32 = 0;
+        while (col_idx < n and col_idx < MAX_CORR_COLS) : (col_idx += 1) {
+            if (col_idx > 0) {
+                json_buffer.append(allocator, ',') catch {
+                    return @intFromEnum(ErrorCode.OutOfMemory);
+                };
+            }
+
+            // Column name
+            json_buffer.append(allocator, '"') catch {
+                return @intFromEnum(ErrorCode.OutOfMemory);
+            };
+            json_buffer.appendSlice(allocator, col_names.items[col_idx]) catch {
+                return @intFromEnum(ErrorCode.OutOfMemory);
+            };
+            json_buffer.appendSlice(allocator, "\":") catch {
+                return @intFromEnum(ErrorCode.OutOfMemory);
+            };
+
+            // Correlation value
+            var val_buf: [32]u8 = undefined;
+            const val_str = std.fmt.bufPrint(&val_buf, "{d:.6}", .{matrix[row_idx][col_idx]}) catch {
+                logError("corrMatrix: Failed to format correlation value", .{});
+                return @intFromEnum(ErrorCode.InvalidFormat);
+            };
+            json_buffer.appendSlice(allocator, val_str) catch {
+                return @intFromEnum(ErrorCode.OutOfMemory);
+            };
+        }
+        std.debug.assert(col_idx == n or col_idx == MAX_CORR_COLS); // Post-loop assertion
+
+        json_buffer.append(allocator, '}') catch {
+            return @intFromEnum(ErrorCode.OutOfMemory);
+        };
+    }
+    std.debug.assert(row_idx == n or row_idx == MAX_CORR_COLS); // Post-loop assertion
+
+    json_buffer.append(allocator, '}') catch {
+        return @intFromEnum(ErrorCode.OutOfMemory);
+    };
+
+    // Copy to output buffer
+    if (json_buffer.items.len >= out_json_size) {
+        logError("corrMatrix: JSON result too large ({} bytes, buffer {} bytes)", .{ json_buffer.items.len, out_json_size });
+        return @intFromEnum(ErrorCode.InvalidFormat);
+    }
+
+    const out_slice = out_json_ptr[0..out_json_size];
+    @memcpy(out_slice[0..json_buffer.items.len], json_buffer.items);
+    out_slice[json_buffer.items.len] = 0; // Null-terminate
+
+    std.debug.assert(out_slice[json_buffer.items.len] == 0); // Post-condition: Null-terminated
+    return @intFromEnum(ErrorCode.Success);
 }
 
 /// Compute rank of values in a column
@@ -3258,39 +3575,41 @@ export fn rozes_rank(
 }
 
 // ============================================================================
-// Window Operations - Rolling/Expanding Windows and Time Series
+// Window Operations (Phase 4 - Milestone 1.3.0)
 // ============================================================================
 
-/// Compute rolling sum
+/// Create rolling window and compute aggregation
 ///
 /// Args:
 ///   - handle: DataFrame handle
 ///   - col_name_ptr: Pointer to column name string
 ///   - col_name_len: Length of column name
-///   - window_size: Window size (number of periods)
+///   - window_size: Window size (must be > 0 and <= MAX_WINDOW_SIZE)
+///   - agg_type: Aggregation type (0=sum, 1=mean, 2=min, 3=max, 4=std)
 ///
-/// Returns: New DataFrame handle with rolling sum values, or error code
+/// Returns: New DataFrame handle with rolling aggregation result, or error code
 ///
 /// Performance: O(n × w) where n = series length, w = window size
-export fn rozes_rolling_sum(
+export fn rozes_rolling(
     handle: i32,
     col_name_ptr: [*]const u8,
     col_name_len: u32,
     window_size: u32,
+    agg_type: u32,
 ) i32 {
     std.debug.assert(handle >= 0); // Pre-condition #1
     std.debug.assert(col_name_len > 0); // Pre-condition #2
-    std.debug.assert(window_size > 0); // Pre-condition #3
-    std.debug.assert(window_size <= window_ops.MAX_WINDOW_SIZE); // Pre-condition #4
+    std.debug.assert(window_size > 0); // Pre-condition #3: Valid window size
+    std.debug.assert(agg_type <= 4); // Pre-condition #4: Valid aggregation type
 
     const df = registry.get(handle) orelse {
-        logError("rolling_sum: Invalid handle {}", .{handle});
+        logError("rolling: Invalid handle {}", .{handle});
         return @intFromEnum(ErrorCode.InvalidHandle);
     };
 
     const col_name = col_name_ptr[0..col_name_len];
     const col = df.column(col_name) orelse {
-        logError("rolling_sum: Column '{s}' not found", .{col_name});
+        logError("rolling: Column '{s}' not found", .{col_name});
         return @intFromEnum(ErrorCode.ColumnNotFound);
     };
 
@@ -3298,20 +3617,27 @@ export fn rozes_rolling_sum(
 
     // Create rolling window
     const rolling = window_ops.RollingWindow.init(col, window_size) catch |err| {
-        logError("rolling_sum: Failed to create window: {}", .{err});
+        logError("rolling: Window init failed: {}", .{err});
         return @intFromEnum(ErrorCode.fromError(err));
     };
 
-    // Compute rolling sum
-    const result_series = rolling.sum(allocator) catch |err| {
-        logError("rolling_sum: Failed for column '{s}': {}", .{ col_name, err });
+    // Compute aggregation
+    const result_series = switch (agg_type) {
+        0 => rolling.sum(allocator),
+        1 => rolling.mean(allocator),
+        2 => rolling.min(allocator),
+        3 => rolling.max(allocator),
+        4 => rolling.stddev(allocator),
+        else => unreachable, // Caught by assertion
+    } catch |err| {
+        logError("rolling: Aggregation failed for column '{s}': {}", .{ col_name, err });
         return @intFromEnum(ErrorCode.fromError(err));
     };
 
-    // Replace column with result
+    // Replace column with rolling result
     var result_df = operations.replaceColumn(df, col_name, result_series) catch |err| {
         allocator.free(result_series.data.Float64);
-        logError("rolling_sum: replaceColumn failed: {}", .{err});
+        logError("rolling: replaceColumn failed: {}", .{err});
         return @intFromEnum(ErrorCode.fromError(err));
     };
 
@@ -3333,625 +3659,900 @@ export fn rozes_rolling_sum(
     return new_handle;
 }
 
-/// Compute rolling mean
-export fn rozes_rolling_mean(
+/// Create expanding window and compute aggregation
+///
+/// Args:
+///   - handle: DataFrame handle
+///   - col_name_ptr: Pointer to column name string
+///   - col_name_len: Length of column name
+///   - agg_type: Aggregation type (0=sum, 1=mean)
+///
+/// Returns: New DataFrame handle with expanding aggregation result, or error code
+///
+/// Performance: O(n) for cumulative operations
+export fn rozes_expanding(
     handle: i32,
     col_name_ptr: [*]const u8,
     col_name_len: u32,
-    window_size: u32,
+    agg_type: u32,
 ) i32 {
-    std.debug.assert(handle >= 0);
-    std.debug.assert(col_name_len > 0);
-    std.debug.assert(window_size > 0);
-    std.debug.assert(window_size <= window_ops.MAX_WINDOW_SIZE);
+    std.debug.assert(handle >= 0); // Pre-condition #1
+    std.debug.assert(col_name_len > 0); // Pre-condition #2
+    std.debug.assert(agg_type <= 1); // Pre-condition #3: Valid aggregation type (sum, mean)
 
     const df = registry.get(handle) orelse {
+        logError("expanding: Invalid handle {}", .{handle});
         return @intFromEnum(ErrorCode.InvalidHandle);
     };
 
     const col_name = col_name_ptr[0..col_name_len];
     const col = df.column(col_name) orelse {
+        logError("expanding: Column '{s}' not found", .{col_name});
         return @intFromEnum(ErrorCode.ColumnNotFound);
     };
 
     const allocator = getAllocator();
-    const rolling = window_ops.RollingWindow.init(col, window_size) catch |err| {
-        return @intFromEnum(ErrorCode.fromError(err));
-    };
+    const window_ops = @import("core/window_ops.zig");
 
-    const result_series = rolling.mean(allocator) catch |err| {
-        return @intFromEnum(ErrorCode.fromError(err));
-    };
-
-    var result_df = operations.replaceColumn(df, col_name, result_series) catch |err| {
-        allocator.free(result_series.data.Float64);
-        return @intFromEnum(ErrorCode.fromError(err));
-    };
-
-    const result_ptr = allocator.create(DataFrame) catch {
-        result_df.deinit();
-        return @intFromEnum(ErrorCode.OutOfMemory);
-    };
-    result_ptr.* = result_df;
-
-    const new_handle = registry.register(result_ptr) catch {
-        result_ptr.deinit();
-        allocator.destroy(result_ptr);
-        return @intFromEnum(ErrorCode.TooManyDataFrames);
-    };
-
-    std.debug.assert(new_handle >= 0);
-    return new_handle;
-}
-
-/// Compute rolling min
-export fn rozes_rolling_min(
-    handle: i32,
-    col_name_ptr: [*]const u8,
-    col_name_len: u32,
-    window_size: u32,
-) i32 {
-    std.debug.assert(handle >= 0);
-    std.debug.assert(col_name_len > 0);
-    std.debug.assert(window_size > 0);
-
-    const df = registry.get(handle) orelse {
-        return @intFromEnum(ErrorCode.InvalidHandle);
-    };
-
-    const col_name = col_name_ptr[0..col_name_len];
-    const col = df.column(col_name) orelse {
-        return @intFromEnum(ErrorCode.ColumnNotFound);
-    };
-
-    const allocator = getAllocator();
-    const rolling = window_ops.RollingWindow.init(col, window_size) catch |err| {
-        return @intFromEnum(ErrorCode.fromError(err));
-    };
-
-    const result_series = rolling.min(allocator) catch |err| {
-        return @intFromEnum(ErrorCode.fromError(err));
-    };
-
-    var result_df = operations.replaceColumn(df, col_name, result_series) catch |err| {
-        allocator.free(result_series.data.Float64);
-        return @intFromEnum(ErrorCode.fromError(err));
-    };
-
-    const result_ptr = allocator.create(DataFrame) catch {
-        result_df.deinit();
-        return @intFromEnum(ErrorCode.OutOfMemory);
-    };
-    result_ptr.* = result_df;
-
-    const new_handle = registry.register(result_ptr) catch {
-        result_ptr.deinit();
-        allocator.destroy(result_ptr);
-        return @intFromEnum(ErrorCode.TooManyDataFrames);
-    };
-
-    std.debug.assert(new_handle >= 0);
-    return new_handle;
-}
-
-/// Compute rolling max
-export fn rozes_rolling_max(
-    handle: i32,
-    col_name_ptr: [*]const u8,
-    col_name_len: u32,
-    window_size: u32,
-) i32 {
-    std.debug.assert(handle >= 0);
-    std.debug.assert(col_name_len > 0);
-    std.debug.assert(window_size > 0);
-
-    const df = registry.get(handle) orelse {
-        return @intFromEnum(ErrorCode.InvalidHandle);
-    };
-
-    const col_name = col_name_ptr[0..col_name_len];
-    const col = df.column(col_name) orelse {
-        return @intFromEnum(ErrorCode.ColumnNotFound);
-    };
-
-    const allocator = getAllocator();
-    const rolling = window_ops.RollingWindow.init(col, window_size) catch |err| {
-        return @intFromEnum(ErrorCode.fromError(err));
-    };
-
-    const result_series = rolling.max(allocator) catch |err| {
-        return @intFromEnum(ErrorCode.fromError(err));
-    };
-
-    var result_df = operations.replaceColumn(df, col_name, result_series) catch |err| {
-        allocator.free(result_series.data.Float64);
-        return @intFromEnum(ErrorCode.fromError(err));
-    };
-
-    const result_ptr = allocator.create(DataFrame) catch {
-        result_df.deinit();
-        return @intFromEnum(ErrorCode.OutOfMemory);
-    };
-    result_ptr.* = result_df;
-
-    const new_handle = registry.register(result_ptr) catch {
-        result_ptr.deinit();
-        allocator.destroy(result_ptr);
-        return @intFromEnum(ErrorCode.TooManyDataFrames);
-    };
-
-    std.debug.assert(new_handle >= 0);
-    return new_handle;
-}
-
-/// Compute rolling standard deviation
-export fn rozes_rolling_std(
-    handle: i32,
-    col_name_ptr: [*]const u8,
-    col_name_len: u32,
-    window_size: u32,
-) i32 {
-    std.debug.assert(handle >= 0);
-    std.debug.assert(col_name_len > 0);
-    std.debug.assert(window_size > 0);
-
-    const df = registry.get(handle) orelse {
-        return @intFromEnum(ErrorCode.InvalidHandle);
-    };
-
-    const col_name = col_name_ptr[0..col_name_len];
-    const col = df.column(col_name) orelse {
-        return @intFromEnum(ErrorCode.ColumnNotFound);
-    };
-
-    const allocator = getAllocator();
-    const rolling = window_ops.RollingWindow.init(col, window_size) catch |err| {
-        return @intFromEnum(ErrorCode.fromError(err));
-    };
-
-    const result_series = rolling.stddev(allocator) catch |err| {
-        return @intFromEnum(ErrorCode.fromError(err));
-    };
-
-    var result_df = operations.replaceColumn(df, col_name, result_series) catch |err| {
-        allocator.free(result_series.data.Float64);
-        return @intFromEnum(ErrorCode.fromError(err));
-    };
-
-    const result_ptr = allocator.create(DataFrame) catch {
-        result_df.deinit();
-        return @intFromEnum(ErrorCode.OutOfMemory);
-    };
-    result_ptr.* = result_df;
-
-    const new_handle = registry.register(result_ptr) catch {
-        result_ptr.deinit();
-        allocator.destroy(result_ptr);
-        return @intFromEnum(ErrorCode.TooManyDataFrames);
-    };
-
-    std.debug.assert(new_handle >= 0);
-    return new_handle;
-}
-
-/// Compute expanding sum
-export fn rozes_expanding_sum(
-    handle: i32,
-    col_name_ptr: [*]const u8,
-    col_name_len: u32,
-) i32 {
-    std.debug.assert(handle >= 0);
-    std.debug.assert(col_name_len > 0);
-
-    const df = registry.get(handle) orelse {
-        return @intFromEnum(ErrorCode.InvalidHandle);
-    };
-
-    const col_name = col_name_ptr[0..col_name_len];
-    const col = df.column(col_name) orelse {
-        return @intFromEnum(ErrorCode.ColumnNotFound);
-    };
-
-    const allocator = getAllocator();
+    // Create expanding window
     const expanding = window_ops.ExpandingWindow.init(col);
 
-    const result_series = expanding.sum(allocator) catch |err| {
+    // Compute aggregation
+    const result_series = switch (agg_type) {
+        0 => expanding.sum(allocator),
+        1 => expanding.mean(allocator),
+        else => unreachable, // Caught by assertion
+    } catch |err| {
+        logError("expanding: Aggregation failed for column '{s}': {}", .{ col_name, err });
         return @intFromEnum(ErrorCode.fromError(err));
     };
 
+    // Replace column with expanding result
     var result_df = operations.replaceColumn(df, col_name, result_series) catch |err| {
         allocator.free(result_series.data.Float64);
+        logError("expanding: replaceColumn failed: {}", .{err});
         return @intFromEnum(ErrorCode.fromError(err));
     };
 
+    // Create DataFrame on heap
     const result_ptr = allocator.create(DataFrame) catch {
         result_df.deinit();
         return @intFromEnum(ErrorCode.OutOfMemory);
     };
     result_ptr.* = result_df;
 
+    // Register result
     const new_handle = registry.register(result_ptr) catch {
         result_ptr.deinit();
         allocator.destroy(result_ptr);
         return @intFromEnum(ErrorCode.TooManyDataFrames);
     };
 
-    std.debug.assert(new_handle >= 0);
+    std.debug.assert(new_handle >= 0); // Post-condition
     return new_handle;
 }
 
-/// Compute expanding mean
-export fn rozes_expanding_mean(
+/// Shift series values by a given number of periods
+///
+/// Args:
+///   - handle: DataFrame handle
+///   - col_name_ptr: Pointer to column name string
+///   - col_name_len: Length of column name
+///   - periods: Number of periods to shift (positive = forward, negative = backward)
+///
+/// Returns: New DataFrame handle with shifted values, or error code
+///
+/// Performance: O(n) copy operation
+export fn rozes_shift(
     handle: i32,
     col_name_ptr: [*]const u8,
     col_name_len: u32,
+    periods: i32,
 ) i32 {
-    std.debug.assert(handle >= 0);
-    std.debug.assert(col_name_len > 0);
+    std.debug.assert(handle >= 0); // Pre-condition #1
+    std.debug.assert(col_name_len > 0); // Pre-condition #2
+    std.debug.assert(@abs(periods) < 1_000_000); // Pre-condition #3: Reasonable shift
 
     const df = registry.get(handle) orelse {
+        logError("shift: Invalid handle {}", .{handle});
         return @intFromEnum(ErrorCode.InvalidHandle);
     };
 
     const col_name = col_name_ptr[0..col_name_len];
     const col = df.column(col_name) orelse {
+        logError("shift: Column '{s}' not found", .{col_name});
         return @intFromEnum(ErrorCode.ColumnNotFound);
     };
 
     const allocator = getAllocator();
-    const expanding = window_ops.ExpandingWindow.init(col);
+    const window_ops = @import("core/window_ops.zig");
 
-    const result_series = expanding.mean(allocator) catch |err| {
+    // Shift values
+    const result_series = window_ops.shift(col, allocator, periods) catch |err| {
+        logError("shift: Failed for column '{s}' with periods {}: {}", .{ col_name, periods, err });
         return @intFromEnum(ErrorCode.fromError(err));
     };
 
+    // Replace column with shifted values
     var result_df = operations.replaceColumn(df, col_name, result_series) catch |err| {
         allocator.free(result_series.data.Float64);
+        logError("shift: replaceColumn failed: {}", .{err});
         return @intFromEnum(ErrorCode.fromError(err));
     };
 
+    // Create DataFrame on heap
     const result_ptr = allocator.create(DataFrame) catch {
         result_df.deinit();
         return @intFromEnum(ErrorCode.OutOfMemory);
     };
     result_ptr.* = result_df;
 
+    // Register result
     const new_handle = registry.register(result_ptr) catch {
         result_ptr.deinit();
         allocator.destroy(result_ptr);
         return @intFromEnum(ErrorCode.TooManyDataFrames);
     };
 
-    std.debug.assert(new_handle >= 0);
+    std.debug.assert(new_handle >= 0); // Post-condition
+    return new_handle;
+}
+
+/// Compute first discrete difference
+///
+/// Args:
+///   - handle: DataFrame handle
+///   - col_name_ptr: Pointer to column name string
+///   - col_name_len: Length of column name
+///   - periods: Number of periods for difference (default = 1)
+///
+/// Returns: New DataFrame handle with difference values, or error code
+///
+/// Performance: O(n) subtraction operation
+export fn rozes_diff(
+    handle: i32,
+    col_name_ptr: [*]const u8,
+    col_name_len: u32,
+    periods: u32,
+) i32 {
+    std.debug.assert(handle >= 0); // Pre-condition #1
+    std.debug.assert(col_name_len > 0); // Pre-condition #2
+    std.debug.assert(periods > 0); // Pre-condition #3: Valid periods
+    std.debug.assert(periods < 1000); // Pre-condition #4: Reasonable periods
+
+    const df = registry.get(handle) orelse {
+        logError("diff: Invalid handle {}", .{handle});
+        return @intFromEnum(ErrorCode.InvalidHandle);
+    };
+
+    const col_name = col_name_ptr[0..col_name_len];
+    const col = df.column(col_name) orelse {
+        logError("diff: Column '{s}' not found", .{col_name});
+        return @intFromEnum(ErrorCode.ColumnNotFound);
+    };
+
+    const allocator = getAllocator();
+    const window_ops = @import("core/window_ops.zig");
+
+    // Compute difference
+    const result_series = window_ops.diff(col, allocator, periods) catch |err| {
+        logError("diff: Failed for column '{s}' with periods {}: {}", .{ col_name, periods, err });
+        return @intFromEnum(ErrorCode.fromError(err));
+    };
+
+    // Replace column with difference values
+    var result_df = operations.replaceColumn(df, col_name, result_series) catch |err| {
+        allocator.free(result_series.data.Float64);
+        logError("diff: replaceColumn failed: {}", .{err});
+        return @intFromEnum(ErrorCode.fromError(err));
+    };
+
+    // Create DataFrame on heap
+    const result_ptr = allocator.create(DataFrame) catch {
+        result_df.deinit();
+        return @intFromEnum(ErrorCode.OutOfMemory);
+    };
+    result_ptr.* = result_df;
+
+    // Register result
+    const new_handle = registry.register(result_ptr) catch {
+        result_ptr.deinit();
+        allocator.destroy(result_ptr);
+        return @intFromEnum(ErrorCode.TooManyDataFrames);
+    };
+
+    std.debug.assert(new_handle >= 0); // Post-condition
+    return new_handle;
+}
+
+/// Compute percentage change
+///
+/// Args:
+///   - handle: DataFrame handle
+///   - col_name_ptr: Pointer to column name string
+///   - col_name_len: Length of column name
+///   - periods: Number of periods for percent change (default = 1)
+///
+/// Returns: New DataFrame handle with percent change values, or error code
+///
+/// Performance: O(n) division operation
+export fn rozes_pctChange(
+    handle: i32,
+    col_name_ptr: [*]const u8,
+    col_name_len: u32,
+    periods: u32,
+) i32 {
+    std.debug.assert(handle >= 0); // Pre-condition #1
+    std.debug.assert(col_name_len > 0); // Pre-condition #2
+    std.debug.assert(periods > 0); // Pre-condition #3: Valid periods
+    std.debug.assert(periods < 1000); // Pre-condition #4: Reasonable periods
+
+    const df = registry.get(handle) orelse {
+        logError("pctChange: Invalid handle {}", .{handle});
+        return @intFromEnum(ErrorCode.InvalidHandle);
+    };
+
+    const col_name = col_name_ptr[0..col_name_len];
+    const col = df.column(col_name) orelse {
+        logError("pctChange: Column '{s}' not found", .{col_name});
+        return @intFromEnum(ErrorCode.ColumnNotFound);
+    };
+
+    const allocator = getAllocator();
+    const window_ops = @import("core/window_ops.zig");
+
+    // Compute percent change
+    const result_series = window_ops.pctChange(col, allocator, periods) catch |err| {
+        logError("pctChange: Failed for column '{s}' with periods {}: {}", .{ col_name, periods, err });
+        return @intFromEnum(ErrorCode.fromError(err));
+    };
+
+    // Replace column with percent change values
+    var result_df = operations.replaceColumn(df, col_name, result_series) catch |err| {
+        allocator.free(result_series.data.Float64);
+        logError("pctChange: replaceColumn failed: {}", .{err});
+        return @intFromEnum(ErrorCode.fromError(err));
+    };
+
+    // Create DataFrame on heap
+    const result_ptr = allocator.create(DataFrame) catch {
+        result_df.deinit();
+        return @intFromEnum(ErrorCode.OutOfMemory);
+    };
+    result_ptr.* = result_df;
+
+    // Register result
+    const new_handle = registry.register(result_ptr) catch {
+        result_ptr.deinit();
+        allocator.destroy(result_ptr);
+        return @intFromEnum(ErrorCode.TooManyDataFrames);
+    };
+
+    std.debug.assert(new_handle >= 0); // Post-condition
     return new_handle;
 }
 
 // ============================================================================
-// Apache Arrow Interop
+// Reshape Operations (Phase 4 - Milestone 1.3.0)
 // ============================================================================
 
-const arrow_schema = @import("arrow/schema.zig");
+const reshape = @import("core/reshape.zig");
 
-/// Export DataFrame to Apache Arrow IPC format (schema mapping MVP)
-/// Returns JSON string with schema information
-/// Note: Full data transfer not yet implemented - schema only for MVP
-export fn rozes_toArrow(handle: i32, out_ptr: *u32, out_len: *u32) i32 {
-    std.debug.assert(handle >= 0);
-    std.debug.assert(@intFromPtr(out_ptr) != 0);
-    std.debug.assert(@intFromPtr(out_len) != 0);
+/// Pivot DataFrame from long format to wide format
+///
+/// Args:
+///   - handle: DataFrame handle
+///   - options_json_ptr: JSON string with pivot options
+///   - options_json_len: Length of options JSON
+///
+/// JSON Format:
+/// {
+///   "index": "column_name",      // Column for row labels
+///   "columns": "column_name",    // Column to pivot (becomes new columns)
+///   "values": "column_name",     // Column containing values
+///   "aggfunc": "sum"            // "sum", "mean", "count", "min", "max"
+/// }
+///
+/// Returns: New DataFrame handle with pivoted data, or error code
+///
+/// Performance: O(n × m) where n = rows, m = unique pivot values
+export fn rozes_pivot(
+    handle: i32,
+    options_json_ptr: [*]const u8,
+    options_json_len: u32,
+) i32 {
+    std.debug.assert(handle >= 0); // Pre-condition #1
+    std.debug.assert(options_json_len > 0); // Pre-condition #2
 
     const df = registry.get(handle) orelse {
+        logError("pivot: Invalid handle {}", .{handle});
         return @intFromEnum(ErrorCode.InvalidHandle);
     };
 
     const allocator = getAllocator();
+    const options_json = options_json_ptr[0..options_json_len];
 
-    // Convert DataFrame to Arrow RecordBatch
-    const batch = arrow_ipc.dataFrameToArrow(allocator, df) catch |err| {
+    // Parse options JSON
+    const pivot_opts = parsePivotOptions(options_json, allocator) catch |err| {
+        logError("pivot: Failed to parse options JSON: {}", .{err});
         return @intFromEnum(ErrorCode.fromError(err));
     };
     defer {
-        var mut_batch = batch;
-        mut_batch.deinit();
+        allocator.free(pivot_opts.index);
+        allocator.free(pivot_opts.columns);
+        allocator.free(pivot_opts.values);
     }
 
-    // Serialize Arrow schema to JSON
-    const json = serializeArrowSchemaToJSON(allocator, &batch.schema, batch.row_count) catch |err| {
+    // Perform pivot
+    const result_df = reshape.pivot(df, allocator, pivot_opts) catch |err| {
+        logError("pivot: Failed: {}", .{err});
         return @intFromEnum(ErrorCode.fromError(err));
     };
 
-    // Return JSON buffer
-    out_ptr.* = @intFromPtr(json.ptr);
-    out_len.* = @intCast(json.len);
-
-    return 0; // Success
-}
-
-/// Import DataFrame from Apache Arrow IPC format (schema mapping MVP)
-/// Accepts JSON string with schema information
-/// Note: Full data transfer not yet implemented - creates DataFrame with schema only
-export fn rozes_fromArrow(json_ptr: [*]const u8, json_len: u32) i32 {
-    std.debug.assert(json_len > 0);
-    std.debug.assert(@intFromPtr(json_ptr) != 0);
-
-    const allocator = getAllocator();
-    const json = json_ptr[0..json_len];
-
-    // Parse JSON to Arrow schema
-    const batch = parseArrowSchemaFromJSON(allocator, json) catch |err| {
-        return @intFromEnum(ErrorCode.fromError(err));
-    };
-    defer {
-        var mut_batch = batch;
-        mut_batch.deinit();
-    }
-
-    // Convert Arrow RecordBatch to DataFrame
-    var df = arrow_ipc.arrowToDataFrame(allocator, &batch) catch |err| {
-        return @intFromEnum(ErrorCode.fromError(err));
-    };
-
-    const df_ptr = allocator.create(DataFrame) catch {
-        df.deinit();
+    // Create DataFrame on heap
+    const result_ptr = allocator.create(DataFrame) catch {
         return @intFromEnum(ErrorCode.OutOfMemory);
     };
-    df_ptr.* = df;
+    result_ptr.* = result_df;
 
-    const handle = registry.register(df_ptr) catch {
-        df_ptr.deinit();
-        allocator.destroy(df_ptr);
+    // Register result
+    const new_handle = registry.register(result_ptr) catch {
+        result_ptr.deinit();
+        allocator.destroy(result_ptr);
         return @intFromEnum(ErrorCode.TooManyDataFrames);
     };
 
-    std.debug.assert(handle >= 0);
-    return handle;
+    std.debug.assert(new_handle >= 0); // Post-condition
+    return new_handle;
 }
 
-// ============================================================================
-// Lazy Evaluation & Query Optimization
-// ============================================================================
+/// Parse pivot options from JSON
+fn parsePivotOptions(json: []const u8, allocator: Allocator) !reshape.PivotOptions {
+    std.debug.assert(json.len > 0); // Pre-condition #1
+    std.debug.assert(json.len < 10_000); // Pre-condition #2: Reasonable size
 
-// Lazy DataFrame registry (similar to DataFrame registry)
-var lazy_registry: std.AutoHashMap(i32, *LazyDataFrame) = undefined;
-var lazy_registry_initialized = false;
-var next_lazy_handle: i32 = 0;
+    var index_str: ?[]const u8 = null;
+    var columns_str: ?[]const u8 = null;
+    var values_str: ?[]const u8 = null;
+    var aggfunc_str: ?[]const u8 = null;
 
-fn initLazyRegistry() void {
-    if (!lazy_registry_initialized) {
-        const allocator = getAllocator();
-        lazy_registry = std.AutoHashMap(i32, *LazyDataFrame).init(allocator);
-        lazy_registry_initialized = true;
-    }
-}
+    // Parse JSON manually (bounded iterations)
+    var i: u32 = 0;
+    const MAX_PARSE_ITERATIONS: u32 = 1000;
+    var iterations: u32 = 0;
 
-fn registerLazy(lazy_df: *LazyDataFrame) !i32 {
-    initLazyRegistry();
-    const handle = next_lazy_handle;
-    next_lazy_handle += 1;
-    try lazy_registry.put(handle, lazy_df);
-    return handle;
-}
+    while (i < json.len and iterations < MAX_PARSE_ITERATIONS) : (iterations += 1) {
+        // Find next key
+        while (i < json.len and json[i] != '"') : (i += 1) {}
+        if (i >= json.len) break;
+        i += 1; // Skip opening quote
 
-fn getLazy(handle: i32) ?*LazyDataFrame {
-    if (!lazy_registry_initialized) return null;
-    return lazy_registry.get(handle);
-}
+        const key_start = i;
+        while (i < json.len and json[i] != '"') : (i += 1) {}
+        const key = json[key_start..i];
+        i += 1; // Skip closing quote
 
-fn unregisterLazy(handle: i32) void {
-    if (!lazy_registry_initialized) return;
-    _ = lazy_registry.remove(handle);
-}
+        // Find value
+        while (i < json.len and (json[i] == ':' or json[i] == ' ' or json[i] == '"')) : (i += 1) {}
+        const value_start = i;
+        while (i < json.len and json[i] != '"' and json[i] != ',' and json[i] != '}') : (i += 1) {}
+        const value = json[value_start..i];
 
-/// Create LazyDataFrame from DataFrame (defers execution)
-export fn rozes_lazy(handle: i32) i32 {
-    std.debug.assert(handle >= 0);
-
-    const df = registry.get(handle) orelse {
-        return @intFromEnum(ErrorCode.InvalidHandle);
-    };
-
-    const allocator = getAllocator();
-
-    const lazy_df_ptr = allocator.create(LazyDataFrame) catch {
-        return @intFromEnum(ErrorCode.OutOfMemory);
-    };
-    lazy_df_ptr.* = LazyDataFrame.init(allocator, df);
-
-    const lazy_handle = registerLazy(lazy_df_ptr) catch {
-        lazy_df_ptr.deinit();
-        allocator.destroy(lazy_df_ptr);
-        return @intFromEnum(ErrorCode.TooManyDataFrames);
-    };
-
-    std.debug.assert(lazy_handle >= 0);
-    return lazy_handle;
-}
-
-/// Add select (projection) operation to LazyDataFrame query plan
-export fn rozes_lazy_select(lazy_handle: i32, json_ptr: [*]const u8, json_len: u32) i32 {
-    std.debug.assert(lazy_handle >= 0);
-    std.debug.assert(json_len > 0);
-
-    const lazy_df = getLazy(lazy_handle) orelse {
-        return @intFromEnum(ErrorCode.InvalidHandle);
-    };
-
-    const allocator = getAllocator();
-    const json = json_ptr[0..json_len];
-
-    // Parse column names from JSON array
-    var columns = parseJSONStringArray(json, allocator) catch |err| {
-        return @intFromEnum(ErrorCode.fromError(err));
-    };
-    defer {
-        for (columns.items) |col| {
-            allocator.free(col);
+        // Store value
+        if (std.mem.eql(u8, key, "index")) {
+            index_str = try allocator.dupe(u8, value);
+        } else if (std.mem.eql(u8, key, "columns")) {
+            columns_str = try allocator.dupe(u8, value);
+        } else if (std.mem.eql(u8, key, "values")) {
+            values_str = try allocator.dupe(u8, value);
+        } else if (std.mem.eql(u8, key, "aggfunc")) {
+            aggfunc_str = try allocator.dupe(u8, value);
         }
-        columns.deinit(allocator);
+
+        // Skip to next field
+        while (i < json.len and json[i] != ',' and json[i] != '}') : (i += 1) {}
+        i += 1; // Skip comma or closing brace
     }
 
-    lazy_df.select(columns.items) catch |err| {
-        return @intFromEnum(ErrorCode.fromError(err));
+    std.debug.assert(iterations < MAX_PARSE_ITERATIONS); // Post-condition
+
+    // Validate required fields
+    const index = index_str orelse return error.MissingIndexField;
+    const columns = columns_str orelse {
+        allocator.free(index);
+        return error.MissingColumnsField;
+    };
+    const values = values_str orelse {
+        allocator.free(index);
+        allocator.free(columns);
+        return error.MissingValuesField;
     };
 
-    return 0; // Success
+    // Parse aggfunc (default: sum)
+    const aggfunc = if (aggfunc_str) |str| blk: {
+        defer allocator.free(str);
+        if (std.mem.eql(u8, str, "sum")) {
+            break :blk reshape.AggFunc.Sum;
+        } else if (std.mem.eql(u8, str, "mean")) {
+            break :blk reshape.AggFunc.Mean;
+        } else if (std.mem.eql(u8, str, "count")) {
+            break :blk reshape.AggFunc.Count;
+        } else if (std.mem.eql(u8, str, "min")) {
+            break :blk reshape.AggFunc.Min;
+        } else if (std.mem.eql(u8, str, "max")) {
+            break :blk reshape.AggFunc.Max;
+        } else {
+            break :blk reshape.AggFunc.Sum;
+        }
+    } else reshape.AggFunc.Sum;
+
+    return reshape.PivotOptions{
+        .index = index,
+        .columns = columns,
+        .values = values,
+        .aggfunc = aggfunc,
+    };
 }
 
-/// Add limit operation to LazyDataFrame query plan
-export fn rozes_lazy_limit(lazy_handle: i32, count: u32) i32 {
-    std.debug.assert(lazy_handle >= 0);
-    std.debug.assert(count > 0);
+/// Melt DataFrame from wide format to long format (unpivot)
+///
+/// Args:
+///   - handle: DataFrame handle
+///   - options_json_ptr: JSON string with melt options
+///   - options_json_len: Length of options JSON
+///
+/// JSON Format:
+/// {
+///   "id_vars": ["col1", "col2"],      // Columns to preserve
+///   "value_vars": ["col3", "col4"],   // Columns to melt (optional)
+///   "var_name": "variable",           // Name for variable column
+///   "value_name": "value"             // Name for value column
+/// }
+///
+/// Returns: New DataFrame handle with melted data, or error code
+///
+/// Performance: O(n × m) where n = rows, m = melted columns
+export fn rozes_melt(
+    handle: i32,
+    options_json_ptr: [*]const u8,
+    options_json_len: u32,
+) i32 {
+    std.debug.assert(handle >= 0); // Pre-condition #1
+    std.debug.assert(options_json_len > 0); // Pre-condition #2
 
-    const lazy_df = getLazy(lazy_handle) orelse {
-        return @intFromEnum(ErrorCode.InvalidHandle);
-    };
-
-    lazy_df.limit(count) catch |err| {
-        return @intFromEnum(ErrorCode.fromError(err));
-    };
-
-    return 0; // Success
-}
-
-/// Execute LazyDataFrame query plan and return result DataFrame
-export fn rozes_collect(lazy_handle: i32) i32 {
-    std.debug.assert(lazy_handle >= 0);
-
-    const lazy_df = getLazy(lazy_handle) orelse {
+    const df = registry.get(handle) orelse {
+        logError("melt: Invalid handle {}", .{handle});
         return @intFromEnum(ErrorCode.InvalidHandle);
     };
 
     const allocator = getAllocator();
+    const options_json = options_json_ptr[0..options_json_len];
 
-    // Execute query plan with optimization
-    var result_df = lazy_df.collect() catch |err| {
+    // Parse options JSON
+    const melt_opts = parseMeltOptions(options_json, allocator) catch |err| {
+        logError("melt: Failed to parse options JSON: {}", .{err});
+        return @intFromEnum(ErrorCode.fromError(err));
+    };
+    defer {
+        for (melt_opts.id_vars) |col| allocator.free(col);
+        allocator.free(melt_opts.id_vars);
+        if (melt_opts.value_vars) |vars| {
+            for (vars) |col| allocator.free(col);
+            allocator.free(vars);
+        }
+        allocator.free(melt_opts.var_name);
+        allocator.free(melt_opts.value_name);
+    }
+
+    // Perform melt
+    const result_df = reshape.melt(df, allocator, melt_opts) catch |err| {
+        logError("melt: Failed: {}", .{err});
         return @intFromEnum(ErrorCode.fromError(err));
     };
 
-    const df_ptr = allocator.create(DataFrame) catch {
-        result_df.deinit();
+    // Create DataFrame on heap
+    const result_ptr = allocator.create(DataFrame) catch {
         return @intFromEnum(ErrorCode.OutOfMemory);
     };
-    df_ptr.* = result_df;
+    result_ptr.* = result_df;
 
-    const handle = registry.register(df_ptr) catch {
-        df_ptr.deinit();
-        allocator.destroy(df_ptr);
+    // Register result
+    const new_handle = registry.register(result_ptr) catch {
+        result_ptr.deinit();
+        allocator.destroy(result_ptr);
         return @intFromEnum(ErrorCode.TooManyDataFrames);
     };
 
-    std.debug.assert(handle >= 0);
-    return handle;
+    std.debug.assert(new_handle >= 0); // Post-condition
+    return new_handle;
 }
 
-/// Free LazyDataFrame
-export fn rozes_lazy_free(lazy_handle: i32) void {
-    std.debug.assert(lazy_handle >= 0);
+/// Parse melt options from JSON
+fn parseMeltOptions(json: []const u8, allocator: Allocator) !reshape.MeltOptions {
+    std.debug.assert(json.len > 0); // Pre-condition #1
+    std.debug.assert(json.len < 10_000); // Pre-condition #2: Reasonable size
 
-    const lazy_df = getLazy(lazy_handle) orelse return;
-
-    const allocator = getAllocator();
-    lazy_df.deinit();
-    allocator.destroy(lazy_df);
-
-    unregisterLazy(lazy_handle);
-}
-
-// ============================================================================
-// Helper Functions for Arrow Serialization
-// ============================================================================
-
-fn serializeArrowSchemaToJSON(
-    allocator: std.mem.Allocator,
-    schema: *const arrow_schema.ArrowSchema,
-    row_count: u32,
-) ![]const u8 {
-    std.debug.assert(schema.fields.len > 0);
-    std.debug.assert(schema.fields.len <= 10_000);
-
-    var buf = std.ArrayList(u8).initCapacity(allocator, 1024) catch {
+    var id_vars_list = std.ArrayList([]const u8).initCapacity(allocator, 4) catch {
         return error.OutOfMemory;
     };
-    errdefer buf.deinit(allocator);
+    defer id_vars_list.deinit(allocator);
+    var value_vars_list: ?std.ArrayList([]const u8) = null;
+    var var_name: ?[]const u8 = null;
+    var value_name: ?[]const u8 = null;
 
-    // Start JSON
-    try buf.appendSlice(allocator, "{\"schema\":{\"fields\":[");
-
-    // Serialize fields
+    // Parse JSON manually (bounded iterations)
     var i: u32 = 0;
-    const max_iter: u32 = 10_000;
-    while (i < schema.fields.len and i < max_iter) : (i += 1) {
-        if (i > 0) try buf.appendSlice(allocator, ",");
+    const MAX_PARSE_ITERATIONS: u32 = 1000;
+    var iterations: u32 = 0;
 
-        const field = schema.fields[i];
-        try buf.appendSlice(allocator, "{\"name\":\"");
-        try buf.appendSlice(allocator, field.name);
-        try buf.appendSlice(allocator, "\",\"type\":\"");
+    while (i < json.len and iterations < MAX_PARSE_ITERATIONS) : (iterations += 1) {
+        // Find next key
+        while (i < json.len and json[i] != '"') : (i += 1) {}
+        if (i >= json.len) break;
+        i += 1; // Skip opening quote
 
-        // Map Arrow type to string
-        const type_str = switch (field.type) {
-            .Int => "Int64",
-            .FloatingPoint => "Float64",
-            .Bool => "Bool",
-            .Utf8 => "String",
-            .Dictionary => "Categorical",
-            .Null => "Null",
-            else => "Unknown",
-        };
-        try buf.appendSlice(allocator, type_str);
-        try buf.appendSlice(allocator, "\"}");
+        const key_start = i;
+        while (i < json.len and json[i] != '"') : (i += 1) {}
+        const key = json[key_start..i];
+        i += 1; // Skip closing quote
+
+        // Find value (array or string)
+        while (i < json.len and (json[i] == ':' or json[i] == ' ')) : (i += 1) {}
+
+        if (std.mem.eql(u8, key, "id_vars") or std.mem.eql(u8, key, "value_vars")) {
+            // Parse array
+            if (json[i] == '[') {
+                i += 1; // Skip opening bracket
+                const arr = if (std.mem.eql(u8, key, "id_vars"))
+                    &id_vars_list
+                else blk: {
+                    value_vars_list = std.ArrayList([]const u8).initCapacity(allocator, 4) catch {
+                        return error.OutOfMemory;
+                    };
+                    break :blk &value_vars_list.?;
+                };
+
+                while (i < json.len and json[i] != ']') {
+                    // Find next string in array
+                    while (i < json.len and json[i] != '"' and json[i] != ']') : (i += 1) {}
+                    if (json[i] == ']') break;
+                    i += 1; // Skip opening quote
+
+                    const str_start = i;
+                    while (i < json.len and json[i] != '"') : (i += 1) {}
+                    const str = try allocator.dupe(u8, json[str_start..i]);
+                    try arr.append(allocator, str);
+                    i += 1; // Skip closing quote
+
+                    // Skip comma and whitespace
+                    while (i < json.len and (json[i] == ',' or json[i] == ' ')) : (i += 1) {}
+                }
+                i += 1; // Skip closing bracket
+            }
+        } else {
+            // Parse string
+            if (json[i] == '"') i += 1; // Skip opening quote
+            const value_start = i;
+            while (i < json.len and json[i] != '"' and json[i] != ',' and json[i] != '}') : (i += 1) {}
+            const value = try allocator.dupe(u8, json[value_start..i]);
+
+            if (std.mem.eql(u8, key, "var_name")) {
+                var_name = value;
+            } else if (std.mem.eql(u8, key, "value_name")) {
+                value_name = value;
+            }
+
+            if (json[i] == '"') i += 1; // Skip closing quote
+        }
+
+        // Skip to next field
+        while (i < json.len and json[i] != ',' and json[i] != '}') : (i += 1) {}
+        i += 1; // Skip comma or closing brace
     }
-    std.debug.assert(i <= max_iter);
 
-    // Close fields array and add row_count
-    try buf.appendSlice(allocator, "],\"row_count\":");
-    var num_buf: [32]u8 = undefined;
-    const num_str = std.fmt.bufPrint(&num_buf, "{d}", .{row_count}) catch "0";
-    try buf.appendSlice(allocator, num_str);
-    try buf.appendSlice(allocator, "}}");
+    std.debug.assert(iterations < MAX_PARSE_ITERATIONS); // Post-condition
 
-    return buf.toOwnedSlice(allocator);
+    return reshape.MeltOptions{
+        .id_vars = try id_vars_list.toOwnedSlice(allocator),
+        .value_vars = if (value_vars_list) |*list| try list.toOwnedSlice(allocator) else null,
+        .var_name = var_name orelse try allocator.dupe(u8, "variable"),
+        .value_name = value_name orelse try allocator.dupe(u8, "value"),
+    };
 }
 
-fn parseArrowSchemaFromJSON(
-    allocator: std.mem.Allocator,
-    json: []const u8,
-) !arrow_ipc.RecordBatch {
-    // MVP: Simple JSON parsing (not production-quality parser)
-    // Expected format: {"schema": {"fields": [...], "row_count": 100}}
+/// Transpose DataFrame - swap rows and columns
+///
+/// Args:
+///   - handle: DataFrame handle
+///
+/// Returns: New DataFrame handle with transposed data, or error code
+///
+/// Performance: O(rows × cols) - copies all data
+export fn rozes_transpose(handle: i32) i32 {
+    std.debug.assert(handle >= 0); // Pre-condition #1
 
-    // Find row_count
-    var row_count: u32 = 0;
-    if (std.mem.indexOf(u8, json, "\"row_count\":")) |pos| {
-        var i = pos + 12; // Skip "row_count":
-        while (i < json.len and (json[i] == ' ' or json[i] == '\t')) : (i += 1) {}
-        var end = i;
-        while (end < json.len and json[end] >= '0' and json[end] <= '9') : (end += 1) {}
-        const num_str = json[i..end];
-        row_count = std.fmt.parseInt(u32, num_str, 10) catch 0;
+    const df = registry.get(handle) orelse {
+        logError("transpose: Invalid handle {}", .{handle});
+        return @intFromEnum(ErrorCode.InvalidHandle);
+    };
+
+    const allocator = getAllocator();
+
+    // Perform transpose
+    const result_df = reshape.transpose(df, allocator) catch |err| {
+        logError("transpose: Failed: {}", .{err});
+        return @intFromEnum(ErrorCode.fromError(err));
+    };
+
+    // Create DataFrame on heap
+    const result_ptr = allocator.create(DataFrame) catch {
+        return @intFromEnum(ErrorCode.OutOfMemory);
+    };
+    result_ptr.* = result_df;
+
+    // Register result
+    const new_handle = registry.register(result_ptr) catch {
+        result_ptr.deinit();
+        allocator.destroy(result_ptr);
+        return @intFromEnum(ErrorCode.TooManyDataFrames);
+    };
+
+    std.debug.assert(new_handle >= 0); // Post-condition
+    return new_handle;
+}
+
+/// Stack DataFrame - convert wide format to long format (simpler API than melt)
+///
+/// Args:
+///   - handle: DataFrame handle
+///   - options_json_ptr: JSON string with stack options
+///   - options_json_len: Length of options JSON
+///
+/// JSON Format:
+/// {
+///   "id_column": "column_name",   // Column to use as identifier
+///   "var_name": "variable",       // Name for variable column
+///   "value_name": "value"         // Name for value column
+/// }
+///
+/// Returns: New DataFrame handle with stacked data, or error code
+///
+/// Performance: O(rows × value_cols)
+export fn rozes_stack(
+    handle: i32,
+    options_json_ptr: [*]const u8,
+    options_json_len: u32,
+) i32 {
+    std.debug.assert(handle >= 0); // Pre-condition #1
+    std.debug.assert(options_json_len > 0); // Pre-condition #2
+
+    const df = registry.get(handle) orelse {
+        logError("stack: Invalid handle {}", .{handle});
+        return @intFromEnum(ErrorCode.InvalidHandle);
+    };
+
+    const allocator = getAllocator();
+    const options_json = options_json_ptr[0..options_json_len];
+
+    // Parse options JSON
+    const stack_opts = parseStackOptions(options_json, allocator) catch |err| {
+        logError("stack: Failed to parse options JSON: {}", .{err});
+        return @intFromEnum(ErrorCode.fromError(err));
+    };
+    defer {
+        allocator.free(stack_opts.id_column);
+        allocator.free(stack_opts.var_name);
+        allocator.free(stack_opts.value_name);
     }
 
-    // Find fields array
-    const fields_start = std.mem.indexOf(u8, json, "\"fields\":[") orelse return error.InvalidFormat;
-    const fields_end = std.mem.lastIndexOf(u8, json, "]") orelse return error.InvalidFormat;
+    // Perform stack
+    const result_df = reshape.stack(df, allocator, stack_opts) catch |err| {
+        logError("stack: Failed: {}", .{err});
+        return @intFromEnum(ErrorCode.fromError(err));
+    };
 
-    // Count fields (count commas + 1, accounting for nested objects)
-    var field_count: u32 = if (fields_end > fields_start + 10) 1 else 0;
-    var depth: u32 = 0;
-    var i = fields_start + 10;
-    while (i < fields_end) : (i += 1) {
-        if (json[i] == '{') depth += 1;
-        if (json[i] == '}') depth -= 1;
-        if (json[i] == ',' and depth == 1) field_count += 1;
+    // Create DataFrame on heap
+    const result_ptr = allocator.create(DataFrame) catch {
+        return @intFromEnum(ErrorCode.OutOfMemory);
+    };
+    result_ptr.* = result_df;
+
+    // Register result
+    const new_handle = registry.register(result_ptr) catch {
+        result_ptr.deinit();
+        allocator.destroy(result_ptr);
+        return @intFromEnum(ErrorCode.TooManyDataFrames);
+    };
+
+    std.debug.assert(new_handle >= 0); // Post-condition
+    return new_handle;
+}
+
+/// Parse stack options from JSON
+fn parseStackOptions(json: []const u8, allocator: Allocator) !reshape.StackOptions {
+    std.debug.assert(json.len > 0); // Pre-condition #1
+    std.debug.assert(json.len < 10_000); // Pre-condition #2: Reasonable size
+
+    var id_column: ?[]const u8 = null;
+    var var_name: ?[]const u8 = null;
+    var value_name: ?[]const u8 = null;
+
+    // Parse JSON manually (bounded iterations)
+    var i: u32 = 0;
+    const MAX_PARSE_ITERATIONS: u32 = 1000;
+    var iterations: u32 = 0;
+
+    while (i < json.len and iterations < MAX_PARSE_ITERATIONS) : (iterations += 1) {
+        // Find next key
+        while (i < json.len and json[i] != '"') : (i += 1) {}
+        if (i >= json.len) break;
+        i += 1; // Skip opening quote
+
+        const key_start = i;
+        while (i < json.len and json[i] != '"') : (i += 1) {}
+        const key = json[key_start..i];
+        i += 1; // Skip closing quote
+
+        // Find value
+        while (i < json.len and (json[i] == ':' or json[i] == ' ' or json[i] == '"')) : (i += 1) {}
+        const value_start = i;
+        while (i < json.len and json[i] != '"' and json[i] != ',' and json[i] != '}') : (i += 1) {}
+        const value = try allocator.dupe(u8, json[value_start..i]);
+
+        // Store value
+        if (std.mem.eql(u8, key, "id_column")) {
+            id_column = value;
+        } else if (std.mem.eql(u8, key, "var_name")) {
+            var_name = value;
+        } else if (std.mem.eql(u8, key, "value_name")) {
+            value_name = value;
+        }
+
+        // Skip to next field
+        while (i < json.len and json[i] != ',' and json[i] != '}') : (i += 1) {}
+        i += 1; // Skip comma or closing brace
     }
 
-    // Create Arrow schema
-    var schema = try arrow_schema.ArrowSchema.init(allocator, field_count);
-    errdefer schema.deinit();
+    std.debug.assert(iterations < MAX_PARSE_ITERATIONS); // Post-condition
 
-    // Parse each field (simplified - production code needs robust parser)
-    // For MVP, assume schema only (no data validation)
+    const id_col = id_column orelse return error.MissingIdColumnField;
 
-    // Create RecordBatch with schema
-    return arrow_ipc.RecordBatch.init(allocator, schema, row_count);
+    return reshape.StackOptions{
+        .id_column = id_col,
+        .var_name = var_name orelse try allocator.dupe(u8, "variable"),
+        .value_name = value_name orelse try allocator.dupe(u8, "value"),
+    };
+}
+
+/// Unstack DataFrame - convert long format to wide format (inverse of stack)
+///
+/// Args:
+///   - handle: DataFrame handle
+///   - options_json_ptr: JSON string with unstack options
+///   - options_json_len: Length of options JSON
+///
+/// JSON Format:
+/// {
+///   "index": "column_name",      // Column for index values
+///   "columns": "column_name",    // Column with variable names
+///   "values": "column_name"      // Column with values
+/// }
+///
+/// Returns: New DataFrame handle with unstacked data, or error code
+///
+/// Performance: O(rows) - same as pivot
+export fn rozes_unstack(
+    handle: i32,
+    options_json_ptr: [*]const u8,
+    options_json_len: u32,
+) i32 {
+    std.debug.assert(handle >= 0); // Pre-condition #1
+    std.debug.assert(options_json_len > 0); // Pre-condition #2
+
+    const df = registry.get(handle) orelse {
+        logError("unstack: Invalid handle {}", .{handle});
+        return @intFromEnum(ErrorCode.InvalidHandle);
+    };
+
+    const allocator = getAllocator();
+    const options_json = options_json_ptr[0..options_json_len];
+
+    // Parse options JSON (same as pivot options without aggfunc)
+    const unstack_opts = parseUnstackOptions(options_json, allocator) catch |err| {
+        logError("unstack: Failed to parse options JSON: {}", .{err});
+        return @intFromEnum(ErrorCode.fromError(err));
+    };
+    defer {
+        allocator.free(unstack_opts.index);
+        allocator.free(unstack_opts.columns);
+        allocator.free(unstack_opts.values);
+    }
+
+    // Perform unstack
+    const result_df = reshape.unstack(df, allocator, unstack_opts) catch |err| {
+        logError("unstack: Failed: {}", .{err});
+        return @intFromEnum(ErrorCode.fromError(err));
+    };
+
+    // Create DataFrame on heap
+    const result_ptr = allocator.create(DataFrame) catch {
+        return @intFromEnum(ErrorCode.OutOfMemory);
+    };
+    result_ptr.* = result_df;
+
+    // Register result
+    const new_handle = registry.register(result_ptr) catch {
+        result_ptr.deinit();
+        allocator.destroy(result_ptr);
+        return @intFromEnum(ErrorCode.TooManyDataFrames);
+    };
+
+    std.debug.assert(new_handle >= 0); // Post-condition
+    return new_handle;
+}
+
+/// Parse unstack options from JSON
+fn parseUnstackOptions(json: []const u8, allocator: Allocator) !reshape.UnstackOptions {
+    std.debug.assert(json.len > 0); // Pre-condition #1
+    std.debug.assert(json.len < 10_000); // Pre-condition #2: Reasonable size
+
+    var index_str: ?[]const u8 = null;
+    var columns_str: ?[]const u8 = null;
+    var values_str: ?[]const u8 = null;
+
+    // Parse JSON manually (bounded iterations)
+    var i: u32 = 0;
+    const MAX_PARSE_ITERATIONS: u32 = 1000;
+    var iterations: u32 = 0;
+
+    while (i < json.len and iterations < MAX_PARSE_ITERATIONS) : (iterations += 1) {
+        // Find next key
+        while (i < json.len and json[i] != '"') : (i += 1) {}
+        if (i >= json.len) break;
+        i += 1; // Skip opening quote
+
+        const key_start = i;
+        while (i < json.len and json[i] != '"') : (i += 1) {}
+        const key = json[key_start..i];
+        i += 1; // Skip closing quote
+
+        // Find value
+        while (i < json.len and (json[i] == ':' or json[i] == ' ' or json[i] == '"')) : (i += 1) {}
+        const value_start = i;
+        while (i < json.len and json[i] != '"' and json[i] != ',' and json[i] != '}') : (i += 1) {}
+        const value = try allocator.dupe(u8, json[value_start..i]);
+
+        // Store value
+        if (std.mem.eql(u8, key, "index")) {
+            index_str = value;
+        } else if (std.mem.eql(u8, key, "columns")) {
+            columns_str = value;
+        } else if (std.mem.eql(u8, key, "values")) {
+            values_str = value;
+        }
+
+        // Skip to next field
+        while (i < json.len and json[i] != ',' and json[i] != '}') : (i += 1) {}
+        i += 1; // Skip comma or closing brace
+    }
+
+    std.debug.assert(iterations < MAX_PARSE_ITERATIONS); // Post-condition
+
+    // Validate required fields
+    const index = index_str orelse return error.MissingIndexField;
+    const columns = columns_str orelse {
+        allocator.free(index);
+        return error.MissingColumnsField;
+    };
+    const values = values_str orelse {
+        allocator.free(index);
+        allocator.free(columns);
+        return error.MissingValuesField;
+    };
+
+    return reshape.UnstackOptions{
+        .index = index,
+        .columns = columns,
+        .values = values,
+    };
 }

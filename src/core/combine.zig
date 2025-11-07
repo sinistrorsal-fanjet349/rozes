@@ -223,6 +223,7 @@ fn concatVertical(
     std.debug.assert(col_idx == num_columns or col_idx == MAX_TOTAL_COLUMNS);
 
     // Step 5: Copy data from each DataFrame
+    const result_allocator = result.getAllocator();
     var current_row: u32 = 0;
     df_idx = 0;
     while (df_idx < dataframes.len and df_idx < MAX_CONCAT_DFS) : (df_idx += 1) {
@@ -238,7 +239,7 @@ fn concatVertical(
 
             if (source_col_opt) |source_col| {
                 // Column exists - copy data
-                try copySeriesData(allocator, dest_col, source_col, current_row, 0, source_df.row_count);
+                try copySeriesData(result_allocator, dest_col, source_col, current_row, 0, source_df.row_count);
             } else {
                 // Column missing - fill with NaN/default
                 try fillSeriesWithDefault(dest_col, current_row, source_df.row_count);
@@ -322,6 +323,7 @@ fn concatHorizontal(
     std.debug.assert(dest_idx == total_columns or dest_idx == MAX_TOTAL_COLUMNS);
 
     // Step 3: Copy all columns
+    const result_allocator = result.getAllocator();
     dest_idx = 0;
     df_idx = 0;
     while (df_idx < dataframes.len and df_idx < MAX_CONCAT_DFS) : (df_idx += 1) {
@@ -333,7 +335,7 @@ fn concatHorizontal(
             const dest_col = &result.columns[dest_idx];
 
             // Copy data
-            try copySeriesData(allocator, dest_col, source_col, 0, 0, expected_rows);
+            try copySeriesData(result_allocator, dest_col, source_col, 0, 0, expected_rows);
 
             dest_idx += 1;
         }
@@ -351,7 +353,7 @@ fn concatHorizontal(
 
 // Copy data from source series to destination series
 fn copySeriesData(
-    allocator: Allocator,
+    string_allocator: Allocator,
     dest: *Series,
     source: *const Series,
     dest_start: u32,
@@ -359,7 +361,7 @@ fn copySeriesData(
     count: u32,
 ) !void {
     // Pre-conditions
-    std.debug.assert(@intFromPtr(&allocator) != 0); // Pre-condition: Valid allocator
+    std.debug.assert(@intFromPtr(&string_allocator) != 0); // Pre-condition: Valid allocator
     std.debug.assert(dest_start + count <= dest.length); // Pre-condition: Destination bounds
     std.debug.assert(source_start + count <= source.length); // Pre-condition: Source bounds
 
@@ -396,7 +398,7 @@ fn copySeriesData(
                 const MAX_STRING_COPY: u32 = 1_000_000;
                 while (i < count and i < MAX_STRING_COPY) : (i += 1) {
                     const str = source_string_col.get(source_start + i);
-                    try dest_string_col.append(allocator, str);
+                    try dest_string_col.append(string_allocator, str);
                 }
                 std.debug.assert(i == count or i == MAX_STRING_COPY);
             },
@@ -761,6 +763,7 @@ fn mergeInner(
     std.debug.assert(col_idx == result.columns.len or col_idx == MAX_TOTAL_COLUMNS);
 
     // Step 5: Fill result data
+    const result_allocator = result.getAllocator();
     var match_idx: u32 = 0;
     while (match_idx < matches.items.len and match_idx < MAX_ROWS) : (match_idx += 1) {
         const match = matches.items[match_idx];
@@ -770,7 +773,7 @@ fn mergeInner(
         while (left_col_idx < left.columns.len and left_col_idx < MAX_TOTAL_COLUMNS) : (left_col_idx += 1) {
             const src_col = &left.columns[left_col_idx];
             const dest_col = &result.columns[left_col_idx];
-            try copySeriesData(allocator, dest_col, src_col, match_idx, match.left_idx, 1);
+            try copySeriesData(result_allocator, dest_col, src_col, match_idx, match.left_idx, 1);
         }
         std.debug.assert(left_col_idx == left.columns.len or left_col_idx == MAX_TOTAL_COLUMNS);
 
@@ -794,7 +797,7 @@ fn mergeInner(
             if (is_key) continue;
 
             const dest_col = &result.columns[result_col_offset];
-            try copySeriesData(allocator, dest_col, src_col, match_idx, match.right_idx, 1);
+            try copySeriesData(result_allocator, dest_col, src_col, match_idx, match.right_idx, 1);
             result_col_offset += 1;
         }
         std.debug.assert(right_col_idx == right.columns.len or right_col_idx == MAX_TOTAL_COLUMNS);
@@ -943,6 +946,7 @@ fn mergeLeft(
     std.debug.assert(col_idx == result.columns.len or col_idx == MAX_TOTAL_COLUMNS);
 
     // Step 5: Fill result data
+    const result_allocator = result.getAllocator();
     var match_idx: u32 = 0;
     while (match_idx < matches.items.len and match_idx < MAX_ROWS) : (match_idx += 1) {
         const match = matches.items[match_idx];
@@ -952,7 +956,7 @@ fn mergeLeft(
         while (left_col_idx < left.columns.len and left_col_idx < MAX_TOTAL_COLUMNS) : (left_col_idx += 1) {
             const src_col = &left.columns[left_col_idx];
             const dest_col = &result.columns[left_col_idx];
-            try copySeriesData(allocator, dest_col, src_col, match_idx, match.left_idx, 1);
+            try copySeriesData(result_allocator, dest_col, src_col, match_idx, match.left_idx, 1);
         }
         std.debug.assert(left_col_idx == left.columns.len or left_col_idx == MAX_TOTAL_COLUMNS);
 
@@ -979,7 +983,7 @@ fn mergeLeft(
 
             if (match.right_idx) |right_idx| {
                 // Has match - copy data
-                try copySeriesData(allocator, dest_col, src_col, match_idx, right_idx, 1);
+                try copySeriesData(result_allocator, dest_col, src_col, match_idx, right_idx, 1);
             } else {
                 // No match - fill with default
                 try fillSeriesWithDefault(dest_col, match_idx, 1);
@@ -1171,6 +1175,7 @@ fn mergeOuter(
     std.debug.assert(col_idx == result.columns.len or col_idx == MAX_TOTAL_COLUMNS);
 
     // Step 7: Fill result data
+    const result_allocator = result.getAllocator();
     var match_idx: u32 = 0;
     while (match_idx < matches.items.len and match_idx < MAX_ROWS) : (match_idx += 1) {
         const match = matches.items[match_idx];
@@ -1182,7 +1187,7 @@ fn mergeOuter(
             const dest_col = &result.columns[left_col_idx];
 
             if (match.left_idx) |left_idx| {
-                try copySeriesData(allocator, dest_col, src_col, match_idx, left_idx, 1);
+                try copySeriesData(result_allocator, dest_col, src_col, match_idx, left_idx, 1);
             } else {
                 try fillSeriesWithDefault(dest_col, match_idx, 1);
             }
@@ -1210,7 +1215,7 @@ fn mergeOuter(
             const dest_col = &result.columns[result_col_offset];
 
             if (match.right_idx) |right_idx| {
-                try copySeriesData(allocator, dest_col, src_col, match_idx, right_idx, 1);
+                try copySeriesData(result_allocator, dest_col, src_col, match_idx, right_idx, 1);
             } else {
                 try fillSeriesWithDefault(dest_col, match_idx, 1);
             }
@@ -1298,6 +1303,7 @@ fn mergeCross(
     std.debug.assert(col_idx == result.columns.len or col_idx == MAX_TOTAL_COLUMNS);
 
     // Step 3: Fill result data (nested loop - all combinations)
+    const result_allocator = result.getAllocator();
     var result_row: u32 = 0;
     var left_row: u32 = 0;
     while (left_row < left.row_count and left_row < MAX_ROWS) : (left_row += 1) {
@@ -1308,7 +1314,7 @@ fn mergeCross(
             while (left_col_idx < left.columns.len and left_col_idx < MAX_TOTAL_COLUMNS) : (left_col_idx += 1) {
                 const src_col = &left.columns[left_col_idx];
                 const dest_col = &result.columns[left_col_idx];
-                try copySeriesData(allocator, dest_col, src_col, result_row, left_row, 1);
+                try copySeriesData(result_allocator, dest_col, src_col, result_row, left_row, 1);
             }
             std.debug.assert(left_col_idx == left.columns.len or left_col_idx == MAX_TOTAL_COLUMNS);
 
@@ -1318,7 +1324,7 @@ fn mergeCross(
             while (right_col_idx < right.columns.len and right_col_idx < MAX_TOTAL_COLUMNS) : (right_col_idx += 1) {
                 const src_col = &right.columns[right_col_idx];
                 const dest_col = &result.columns[result_col_offset];
-                try copySeriesData(allocator, dest_col, src_col, result_row, right_row, 1);
+                try copySeriesData(result_allocator, dest_col, src_col, result_row, right_row, 1);
                 result_col_offset += 1;
             }
             std.debug.assert(right_col_idx == right.columns.len or right_col_idx == MAX_TOTAL_COLUMNS);
@@ -1476,6 +1482,7 @@ pub fn update(
     std.debug.assert(col_idx == result.columns.len or col_idx == MAX_TOTAL_COLUMNS);
 
     // Step 3: Copy base data, then update from 'other' where keys match
+    const result_allocator = result.getAllocator();
     var base_row: u32 = 0;
     while (base_row < base.row_count and base_row < MAX_ROWS) : (base_row += 1) {
         const key = try buildHashKey(allocator, base, base_row, options.on);
@@ -1502,21 +1509,21 @@ pub fn update(
 
             if (is_key) {
                 // Key column - always copy from base
-                try copySeriesData(allocator, dest_col, base_col, base_row, base_row, 1);
+                try copySeriesData(result_allocator, dest_col, base_col, base_row, base_row, 1);
             } else if (other_row_opt) |other_row_idx| {
                 // Has match - find matching column in 'other' DataFrame
                 const other_col_opt = other.column(base_col.name);
 
                 if (other_col_opt) |other_col| {
                     // Column exists in both - update from 'other'
-                    try copySeriesData(allocator, dest_col, other_col, base_row, other_row_idx, 1);
+                    try copySeriesData(result_allocator, dest_col, other_col, base_row, other_row_idx, 1);
                 } else {
                     // Column not in 'other' - keep base value
-                    try copySeriesData(allocator, dest_col, base_col, base_row, base_row, 1);
+                    try copySeriesData(result_allocator, dest_col, base_col, base_row, base_row, 1);
                 }
             } else {
                 // No match - keep base value
-                try copySeriesData(allocator, dest_col, base_col, base_row, base_row, 1);
+                try copySeriesData(result_allocator, dest_col, base_col, base_row, base_row, 1);
             }
         }
         std.debug.assert(col_idx == base.columns.len or col_idx == MAX_TOTAL_COLUMNS);

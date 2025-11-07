@@ -4,16 +4,22 @@
  * Demonstrates reading and writing CSV files
  */
 
-const { Rozes } = require('../../dist/index.js');
-const fs = require('fs');
-const path = require('path');
+import { Rozes } from '../../dist/index.mjs';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import { dirname } from 'path';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 
 async function main() {
     console.log('🌹 Rozes DataFrame Library - File I/O Example\n');
 
     // Initialize Rozes
-    const rozes = await Rozes.init();
-    console.log(`✅ Rozes ${rozes.version} initialized\n`);
+    const wasmPath = path.join(__dirname, '../../zig-out/bin/rozes.wasm');
+    const rozes = await Rozes.init(wasmPath);
+    console.log(`✅ Rozes ${rozes.version.trim()} initialized\n`);
 
     // Create sample CSV file
     const csvPath = path.join(__dirname, 'sample.csv');
@@ -49,9 +55,21 @@ Grape,2.50,60`;
     }
     console.log(`\n   Total inventory value: $${totalValue.toFixed(2)}\n`);
 
-    // NOTE: CSV export (toCSV/toCSVFile) will be added in a future release
-    // For now, you can access and process data via column() method
-    console.log('💡 Tip: CSV export (toCSV/toCSVFile) will be added in 1.1.0');
+    // Export to CSV file
+    console.log('Exporting DataFrame to CSV...');
+    const outputPath = path.join(__dirname, 'output.csv');
+    df.toCSVFile(outputPath);
+    console.log(`✅ Exported to: ${outputPath}\n`);
+
+    // Verify the exported file
+    const exported = fs.readFileSync(outputPath, 'utf8');
+    console.log('Exported CSV content:');
+    console.log(exported);
+
+    // Export as TSV (tab-separated)
+    const tsvPath = path.join(__dirname, 'output.tsv');
+    df.toCSVFile(tsvPath, { delimiter: '\t' });
+    console.log(`\n✅ Also exported as TSV: ${tsvPath}\n`);
 
     // Clean up
     df.free();
@@ -59,6 +77,8 @@ Grape,2.50,60`;
 
     // Clean up example files
     fs.unlinkSync(csvPath);
+    fs.unlinkSync(outputPath);
+    fs.unlinkSync(tsvPath);
     console.log('✅ Cleaned up example files');
 
     console.log('\n🎉 File I/O example completed successfully!');

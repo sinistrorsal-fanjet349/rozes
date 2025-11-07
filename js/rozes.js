@@ -49,6 +49,8 @@ const ErrorCode = {
     TooManyDataFrames: -7,
     InvalidOptions: -8,
     InvalidRange: -10,
+    NotImplemented: -11,
+    InsufficientData: -12,
 };
 
 /**
@@ -64,6 +66,8 @@ const ErrorMessages = {
     [ErrorCode.TooManyDataFrames]: 'Too many DataFrames (max 1000)',
     [ErrorCode.InvalidOptions]: 'Invalid CSV options',
     [ErrorCode.InvalidRange]: 'Invalid range - start is greater than end',
+    [ErrorCode.NotImplemented]: 'Feature not yet implemented',
+    [ErrorCode.InsufficientData]: 'Insufficient data for this operation',
 };
 
 /**
@@ -400,13 +404,18 @@ class DataFrame {
             if (offsetsPtr + offsetsLen * 4 > wasm.memory.buffer.byteLength) {
                 throw new Error(`Offsets pointer out of bounds`);
             }
-            if (bufferPtr + bufferLen > wasm.memory.buffer.byteLength) {
+            // NOTE: Skip buffer bounds check if bufferLen is 0 (all empty strings)
+            // In this case, bufferPtr may be undefined/arbitrary
+            if (bufferLen > 0 && bufferPtr + bufferLen > wasm.memory.buffer.byteLength) {
                 throw new Error(`Buffer pointer out of bounds`);
             }
 
             // Get offsets array and buffer
             const offsets = new Uint32Array(wasm.memory.buffer, offsetsPtr, offsetsLen);
-            const buffer = new Uint8Array(wasm.memory.buffer, bufferPtr, bufferLen);
+            // NOTE: If bufferLen is 0 (all empty strings), create empty buffer without using potentially invalid bufferPtr
+            const buffer = bufferLen > 0
+                ? new Uint8Array(wasm.memory.buffer, bufferPtr, bufferLen)
+                : new Uint8Array(0); // Empty buffer for all empty strings
 
             // Decode strings from buffer using offsets
             const strings = [];
@@ -577,6 +586,75 @@ class DataFrame {
     }
 
     /**
+     * Sort DataFrame by multiple columns with per-column sort order
+     * @param {Array<{column: string, order: 'asc'|'desc'}>} sortSpecs - Array of sort specifications
+     * @returns {DataFrame} - New sorted DataFrame
+     *
+     * @example
+     * // Sort by age descending, then by name ascending
+     * const sorted = df.sortBy([
+     *   { column: 'age', order: 'desc' },
+     *   { column: 'name', order: 'asc' }
+     * ]);
+     * sorted.free();
+     */
+    sortBy(sortSpecs) {
+        this._checkNotFreed();
+
+        if (!Array.isArray(sortSpecs) || sortSpecs.length === 0) {
+            throw new Error('sortBy() requires a non-empty array of sort specifications');
+        }
+
+        // Validate and normalize sort specs (strip type hints)
+        const normalizedSpecs = [];
+        for (const spec of sortSpecs) {
+            if (typeof spec.column !== 'string' || spec.column.length === 0) {
+                throw new Error('Each sort spec must have a column name');
+            }
+            if (spec.order !== 'asc' && spec.order !== 'desc') {
+                throw new Error('Each sort spec must have order "asc" or "desc"');
+            }
+
+            // Strip type hints (e.g., "age:Int64" → "age")
+            const normalizedColumn = spec.column.includes(':')
+                ? spec.column.split(':')[0]
+                : spec.column;
+
+            normalizedSpecs.push({
+                column: normalizedColumn,
+                order: spec.order
+            });
+        }
+
+        const wasm = this._wasm;
+        const jsonStr = JSON.stringify(normalizedSpecs);
+        const jsonBytes = new TextEncoder().encode(jsonStr);
+
+        // Allocate scratch space for JSON
+        const jsonPtr = wasm.instance.exports.rozes_alloc(jsonBytes.length);
+        if (jsonPtr === 0) {
+            throw new RozesError(ErrorCode.OutOfMemory, 'Failed to allocate JSON buffer');
+        }
+
+        try {
+            // Copy JSON to WASM memory
+            new Uint8Array(wasm.memory.buffer, jsonPtr, jsonBytes.length).set(jsonBytes);
+
+            const newHandle = wasm.instance.exports.rozes_sortBy(
+                this._handle,
+                jsonPtr,
+                jsonBytes.length
+            );
+
+            checkResult(newHandle, 'Failed to sort by multiple columns');
+
+            return new DataFrame(newHandle, wasm, this._autoCleanup);
+        } finally {
+            wasm.instance.exports.rozes_free_buffer(jsonPtr, jsonBytes.length);
+        }
+    }
+
+    /**
      * Filter DataFrame by numeric condition
      *
      * @param {string} columnName - Column to filter on
@@ -737,8 +815,8 @@ class DataFrame {
      * Join this DataFrame with another DataFrame
      *
      * @param {DataFrame} other - DataFrame to join with
-     * @param {string|string[]} on - Column name(s) to join on (must exist in both DataFrames)
-     * @param {string} how - Join type: 'inner' or 'left' (default: 'inner')
+     * @param {string|string[]} on - Column name(s) to join on (not required for cross join)
+     * @param {string} how - Join type: 'inner', 'left', 'right', 'outer', or 'cross' (default: 'inner')
      * @returns {DataFrame} - New DataFrame with joined data
      *
      * @example
@@ -750,13 +828,26 @@ class DataFrame {
      * @example
      * // Left join on multiple columns
      * const joined = left.join(right, ['city', 'state'], 'left');
-     * // Result: all rows from left + matching rows from right
+     * // Result: all rows from left + matching rows from right (with nulls for unmatched)
      * joined.free();
      *
      * @example
-     * // Inner join with explicit type
-     * const joined = orders.join(customers, 'customer_id', 'inner');
+     * // Right join
+     * const joined = orders.join(customers, 'customer_id', 'right');
+     * // Result: all rows from right + matching rows from left
      * joined.free();
+     *
+     * @example
+     * // Outer join (full outer)
+     * const joined = left.join(right, 'id', 'outer');
+     * // Result: all rows from both DataFrames (with nulls for unmatched)
+     * joined.free();
+     *
+     * @example
+     * // Cross join (Cartesian product - no join columns needed)
+     * const crossed = colors.join(sizes, null, 'cross');
+     * // Result: every combination of rows from both DataFrames
+     * crossed.free();
      */
     join(other, on, how = 'inner') {
         this._checkNotFreed();
@@ -768,24 +859,41 @@ class DataFrame {
             throw new Error('Cannot join with a freed DataFrame');
         }
 
-        // Normalize 'on' to array
-        const joinColumns = Array.isArray(on) ? on : [on];
-        if (joinColumns.length === 0) {
-            throw new Error('join() requires at least one column name');
-        }
-
         // Validate join type
         const joinTypeMap = {
             'inner': 0,
-            'left': 1
+            'left': 1,
+            'right': 2,
+            'outer': 3,
+            'cross': 4
         };
 
         if (!joinTypeMap.hasOwnProperty(how)) {
-            throw new Error(`Invalid join type '${how}'. Must be 'inner' or 'left'`);
+            throw new Error(`Invalid join type '${how}'. Must be 'inner', 'left', 'right', 'outer', or 'cross'`);
         }
 
         const joinTypeCode = joinTypeMap[how];
         const wasm = this._wasm;
+
+        // Cross join doesn't require join columns
+        if (how === 'cross') {
+            const newHandle = wasm.instance.exports.rozes_join(
+                this._handle,
+                other._handle,
+                0, // No join columns needed
+                0, // Length 0
+                joinTypeCode
+            );
+
+            checkResult(newHandle, `Failed to cross join`);
+            return new DataFrame(newHandle, wasm, this._autoCleanup);
+        }
+
+        // Normalize 'on' to array for other join types
+        const joinColumns = Array.isArray(on) ? on : [on];
+        if (joinColumns.length === 0) {
+            throw new Error('join() requires at least one column name for non-cross joins');
+        }
 
         // Encode column names as JSON array
         const joinColsJSON = JSON.stringify(joinColumns);
@@ -1162,6 +1270,1098 @@ class DataFrame {
     }
 
     /**
+     * Compute median of a numeric column
+     * @param {string} columnName - Name of the column
+     * @returns {number} - Median value
+     * @example
+     * const df = DataFrame.fromCSV('age\n25\n30\n35\n40\n45\n');
+     * const medianAge = df.median('age');
+     * console.log(`Median age: ${medianAge}`); // 35
+     */
+    median(columnName) {
+        this._checkNotFreed();
+        const wasm = this._wasm;
+
+        if (!columnName || typeof columnName !== 'string') {
+            throw new Error('median() requires a non-empty column name');
+        }
+
+        const nameBytes = new TextEncoder().encode(columnName);
+        const namePtr = wasm.instance.exports.rozes_alloc(nameBytes.length);
+        const nameBuffer = new Uint8Array(wasm.memory.buffer, namePtr, nameBytes.length);
+        nameBuffer.set(nameBytes);
+
+        try {
+            const result = wasm.instance.exports.rozes_median(
+                this._handle,
+                namePtr,
+                nameBytes.length
+            );
+
+            if (isNaN(result)) {
+                throw new Error(`Failed to compute median of column '${columnName}'`);
+            }
+
+            return result;
+        } finally {
+            wasm.instance.exports.rozes_free_buffer(namePtr, nameBytes.length);
+        }
+    }
+
+    /**
+     * Compute quantile/percentile of a numeric column
+     * @param {string} columnName - Name of the column
+     * @param {number} q - Quantile value between 0.0 and 1.0 (e.g., 0.25 for 25th percentile)
+     * @returns {number} - Quantile value
+     * @example
+     * const df = DataFrame.fromCSV('score\n10\n20\n30\n40\n50\n');
+     * const q25 = df.quantile('score', 0.25);
+     * const q75 = df.quantile('score', 0.75);
+     * console.log(`25th percentile: ${q25}, 75th percentile: ${q75}`);
+     */
+    quantile(columnName, q) {
+        this._checkNotFreed();
+        const wasm = this._wasm;
+
+        if (!columnName || typeof columnName !== 'string') {
+            throw new Error('quantile() requires a non-empty column name');
+        }
+
+        if (typeof q !== 'number' || q < 0 || q > 1) {
+            throw new Error('quantile() requires q to be between 0.0 and 1.0');
+        }
+
+        const nameBytes = new TextEncoder().encode(columnName);
+        const namePtr = wasm.instance.exports.rozes_alloc(nameBytes.length);
+        const nameBuffer = new Uint8Array(wasm.memory.buffer, namePtr, nameBytes.length);
+        nameBuffer.set(nameBytes);
+
+        try {
+            const result = wasm.instance.exports.rozes_quantile(
+                this._handle,
+                namePtr,
+                nameBytes.length,
+                q
+            );
+
+            if (isNaN(result)) {
+                throw new Error(`Failed to compute quantile of column '${columnName}'`);
+            }
+
+            return result;
+        } finally {
+            wasm.instance.exports.rozes_free_buffer(namePtr, nameBytes.length);
+        }
+    }
+
+    /**
+     * Count frequency of unique values in a column
+     * @param {string} columnName - Name of the column
+     * @returns {Object} - Object mapping values to counts
+     * @example
+     * const df = DataFrame.fromCSV('city\nNY\nLA\nNY\nLA\nLA\n');
+     * const counts = df.valueCounts('city');
+     * console.log(counts); // { LA: 3, NY: 2 }
+     */
+    valueCounts(columnName) {
+        this._checkNotFreed();
+        const wasm = this._wasm;
+
+        if (!columnName || typeof columnName !== 'string') {
+            throw new Error('valueCounts() requires a non-empty column name');
+        }
+
+        const nameBytes = new TextEncoder().encode(columnName);
+        const namePtr = wasm.instance.exports.rozes_alloc(nameBytes.length);
+        const nameBuffer = new Uint8Array(wasm.memory.buffer, namePtr, nameBytes.length);
+        nameBuffer.set(nameBytes);
+
+        // Allocate 64KB buffer for JSON result
+        const resultSize = 65536;
+        const resultPtr = wasm.instance.exports.rozes_alloc(resultSize);
+        if (resultPtr === 0) {
+            wasm.instance.exports.rozes_free_buffer(namePtr, nameBytes.length);
+            throw new RozesError(ErrorCode.OutOfMemory, 'Failed to allocate result buffer');
+        }
+
+        try {
+            const code = wasm.instance.exports.rozes_valueCounts(
+                this._handle,
+                namePtr,
+                nameBytes.length,
+                resultPtr,
+                resultSize
+            );
+
+            checkResult(code, `Failed to compute value counts for column '${columnName}'`);
+
+            // Read JSON result
+            const resultBuffer = new Uint8Array(wasm.memory.buffer, resultPtr, resultSize);
+            const nullIndex = resultBuffer.indexOf(0);
+            const jsonStr = new TextDecoder().decode(resultBuffer.subarray(0, nullIndex));
+            return JSON.parse(jsonStr);
+        } finally {
+            wasm.instance.exports.rozes_free_buffer(namePtr, nameBytes.length);
+            wasm.instance.exports.rozes_free_buffer(resultPtr, resultSize);
+        }
+    }
+
+    /**
+     * Compute correlation matrix for numeric columns
+     * @param {Array<string>} [columnNames] - Optional array of column names (defaults to all numeric columns)
+     * @returns {Object} - Nested object representing correlation matrix
+     * @example
+     * const df = DataFrame.fromCSV('age,income,score\n25,50000,85\n30,60000,90\n35,70000,95\n');
+     * const corr = df.corrMatrix();
+     * console.log(corr);
+     * // {
+     * //   age: { age: 1.0, income: 1.0, score: 1.0 },
+     * //   income: { age: 1.0, income: 1.0, score: 1.0 },
+     * //   score: { age: 1.0, income: 1.0, score: 1.0 }
+     * // }
+     */
+    corrMatrix(columnNames = null) {
+        this._checkNotFreed();
+        const wasm = this._wasm;
+
+        // If no column names provided, pass null to use all numeric columns
+        const colNamesJson = columnNames ? JSON.stringify(columnNames) : null;
+        const colNamesBytes = colNamesJson ? new TextEncoder().encode(colNamesJson) : new Uint8Array(0);
+        const colNamesPtr = colNamesBytes.length > 0 ? wasm.instance.exports.rozes_alloc(colNamesBytes.length) : 0;
+
+        if (colNamesBytes.length > 0 && colNamesPtr === 0) {
+            throw new RozesError(ErrorCode.OutOfMemory, 'Failed to allocate column names buffer');
+        }
+
+        if (colNamesPtr > 0) {
+            const colNamesBuffer = new Uint8Array(wasm.memory.buffer, colNamesPtr, colNamesBytes.length);
+            colNamesBuffer.set(colNamesBytes);
+        }
+
+        // Allocate 64KB buffer for JSON result
+        const resultSize = 65536;
+        const resultPtr = wasm.instance.exports.rozes_alloc(resultSize);
+        if (resultPtr === 0) {
+            if (colNamesPtr > 0) {
+                wasm.instance.exports.rozes_free_buffer(colNamesPtr, colNamesBytes.length);
+            }
+            throw new RozesError(ErrorCode.OutOfMemory, 'Failed to allocate result buffer');
+        }
+
+        try {
+            const code = wasm.instance.exports.rozes_corrMatrix(
+                this._handle,
+                colNamesPtr,
+                colNamesBytes.length,
+                resultPtr,
+                resultSize
+            );
+
+            checkResult(code, 'Failed to compute correlation matrix');
+
+            // Read JSON result
+            const resultBuffer = new Uint8Array(wasm.memory.buffer, resultPtr, resultSize);
+            const nullIndex = resultBuffer.indexOf(0);
+            const jsonStr = new TextDecoder().decode(resultBuffer.subarray(0, nullIndex));
+            return JSON.parse(jsonStr);
+        } finally {
+            if (colNamesPtr > 0) {
+                wasm.instance.exports.rozes_free_buffer(colNamesPtr, colNamesBytes.length);
+            }
+            wasm.instance.exports.rozes_free_buffer(resultPtr, resultSize);
+        }
+    }
+
+    /**
+     * Rank values in a column
+     * @param {string} columnName - Name of the column
+     * @param {string} [method='average'] - Tie-handling method: 'average', 'min', 'max', 'dense', or 'ordinal'
+     * @returns {DataFrame} - New DataFrame with Float64 rank column
+     * @example
+     * const df = DataFrame.fromCSV('score\n85\n90\n85\n95\n');
+     * const ranked = df.rank('score', 'min');
+     * console.log(ranked.column('score')); // [1, 3, 1, 4] (ties get minimum rank)
+     */
+    rank(columnName, method = 'average') {
+        this._checkNotFreed();
+        const wasm = this._wasm;
+
+        if (!columnName || typeof columnName !== 'string') {
+            throw new Error('rank() requires a non-empty column name');
+        }
+
+        // Strip type hints (e.g., "score:Int64" → "score")
+        const colonIndex = columnName.indexOf(':');
+        const actualColumnName = colonIndex >= 0 ? columnName.substring(0, colonIndex) : columnName;
+
+        const methodMap = {
+            'average': 0,
+            'min': 1,
+            'max': 2,
+            'dense': 3,
+            'ordinal': 4
+        };
+
+        if (!(method in methodMap)) {
+            throw new Error(`Invalid rank method '${method}'. Must be one of: average, min, max, dense, ordinal`);
+        }
+
+        const nameBytes = new TextEncoder().encode(actualColumnName);
+        const namePtr = wasm.instance.exports.rozes_alloc(nameBytes.length);
+        const nameBuffer = new Uint8Array(wasm.memory.buffer, namePtr, nameBytes.length);
+        nameBuffer.set(nameBytes);
+
+        try {
+            const newHandle = wasm.instance.exports.rozes_rank(
+                this._handle,
+                namePtr,
+                nameBytes.length,
+                methodMap[method]
+            );
+
+            checkResult(newHandle, `Failed to rank column '${actualColumnName}'`);
+            return new DataFrame(newHandle, wasm, this._autoCleanup);
+        } finally {
+            wasm.instance.exports.rozes_free_buffer(namePtr, nameBytes.length);
+        }
+    }
+
+    // ========================================================================
+    // Window Operations (Phase 4 - Milestone 1.3.0)
+    // ========================================================================
+
+    /**
+     * Apply rolling window aggregation to a column
+     * @param {string} columnName - Name of the column
+     * @param {number} windowSize - Window size (must be > 0)
+     * @param {string} aggregation - Aggregation function: 'sum', 'mean', 'min', 'max', or 'std'
+     * @returns {DataFrame} - New DataFrame with rolling aggregation result
+     * @example
+     * const df = DataFrame.fromCSV('value\n10\n20\n30\n40\n50\n');
+     * const rollingMean = df.rolling('value', 3, 'mean');
+     * console.log(rollingMean.column('value')); // [10, 15, 20, 30, 40]
+     */
+    rolling(columnName, windowSize, aggregation = 'mean') {
+        this._checkNotFreed();
+        const wasm = this._wasm;
+
+        if (!columnName || typeof columnName !== 'string') {
+            throw new Error('rolling() requires a non-empty column name');
+        }
+
+        if (typeof windowSize !== 'number' || windowSize <= 0) {
+            throw new Error('rolling() requires windowSize to be a positive number');
+        }
+
+        // Strip type hints (e.g., "value:Int64" → "value")
+        const colonIndex = columnName.indexOf(':');
+        const actualColumnName = colonIndex >= 0 ? columnName.substring(0, colonIndex) : columnName;
+
+        const aggMap = {
+            'sum': 0,
+            'mean': 1,
+            'min': 2,
+            'max': 3,
+            'std': 4
+        };
+
+        if (!(aggregation in aggMap)) {
+            throw new Error(`Invalid aggregation '${aggregation}'. Must be one of: sum, mean, min, max, std`);
+        }
+
+        const nameBytes = new TextEncoder().encode(actualColumnName);
+        const namePtr = wasm.instance.exports.rozes_alloc(nameBytes.length);
+        const nameBuffer = new Uint8Array(wasm.memory.buffer, namePtr, nameBytes.length);
+        nameBuffer.set(nameBytes);
+
+        try {
+            const newHandle = wasm.instance.exports.rozes_rolling(
+                this._handle,
+                namePtr,
+                nameBytes.length,
+                windowSize,
+                aggMap[aggregation]
+            );
+
+            checkResult(newHandle, `Failed to compute rolling ${aggregation} for column '${actualColumnName}'`);
+            return new DataFrame(newHandle, wasm, this._autoCleanup);
+        } finally {
+            wasm.instance.exports.rozes_free_buffer(namePtr, nameBytes.length);
+        }
+    }
+
+    /**
+     * Apply expanding (cumulative) window aggregation to a column
+     * @param {string} columnName - Name of the column
+     * @param {string} aggregation - Aggregation function: 'sum' or 'mean'
+     * @returns {DataFrame} - New DataFrame with expanding aggregation result
+     * @example
+     * const df = DataFrame.fromCSV('value\n10\n20\n30\n40\n50\n');
+     * const cumsum = df.expanding('value', 'sum');
+     * console.log(cumsum.column('value')); // [10, 30, 60, 100, 150]
+     */
+    expanding(columnName, aggregation = 'sum') {
+        this._checkNotFreed();
+        const wasm = this._wasm;
+
+        if (!columnName || typeof columnName !== 'string') {
+            throw new Error('expanding() requires a non-empty column name');
+        }
+
+        // Strip type hints (e.g., "value:Int64" → "value")
+        const colonIndex = columnName.indexOf(':');
+        const actualColumnName = colonIndex >= 0 ? columnName.substring(0, colonIndex) : columnName;
+
+        const aggMap = {
+            'sum': 0,
+            'mean': 1
+        };
+
+        if (!(aggregation in aggMap)) {
+            throw new Error(`Invalid aggregation '${aggregation}'. Must be one of: sum, mean`);
+        }
+
+        const nameBytes = new TextEncoder().encode(actualColumnName);
+        const namePtr = wasm.instance.exports.rozes_alloc(nameBytes.length);
+        const nameBuffer = new Uint8Array(wasm.memory.buffer, namePtr, nameBytes.length);
+        nameBuffer.set(nameBytes);
+
+        try {
+            const newHandle = wasm.instance.exports.rozes_expanding(
+                this._handle,
+                namePtr,
+                nameBytes.length,
+                aggMap[aggregation]
+            );
+
+            checkResult(newHandle, `Failed to compute expanding ${aggregation} for column '${actualColumnName}'`);
+            return new DataFrame(newHandle, wasm, this._autoCleanup);
+        } finally {
+            wasm.instance.exports.rozes_free_buffer(namePtr, nameBytes.length);
+        }
+    }
+
+    /**
+     * Shift column values by a given number of periods
+     * @param {string} columnName - Name of the column
+     * @param {number} periods - Number of periods to shift (positive = forward, negative = backward)
+     * @returns {DataFrame} - New DataFrame with shifted values (shifted positions filled with NaN)
+     * @example
+     * const df = DataFrame.fromCSV('value\n10\n20\n30\n40\n50\n');
+     * const shifted = df.shift('value', 1); // Shift forward by 1
+     * console.log(shifted.column('value')); // [NaN, 10, 20, 30, 40]
+     */
+    shift(columnName, periods = 1) {
+        this._checkNotFreed();
+        const wasm = this._wasm;
+
+        if (!columnName || typeof columnName !== 'string') {
+            throw new Error('shift() requires a non-empty column name');
+        }
+
+        // Strip type hints (e.g., "value:Int64" → "value")
+        const colonIndex = columnName.indexOf(':');
+        const actualColumnName = colonIndex >= 0 ? columnName.substring(0, colonIndex) : columnName;
+
+        if (typeof periods !== 'number' || !Number.isInteger(periods)) {
+            throw new Error('shift() requires periods to be an integer');
+        }
+
+        const nameBytes = new TextEncoder().encode(actualColumnName);
+        const namePtr = wasm.instance.exports.rozes_alloc(nameBytes.length);
+        const nameBuffer = new Uint8Array(wasm.memory.buffer, namePtr, nameBytes.length);
+        nameBuffer.set(nameBytes);
+
+        try {
+            const newHandle = wasm.instance.exports.rozes_shift(
+                this._handle,
+                namePtr,
+                nameBytes.length,
+                periods
+            );
+
+            checkResult(newHandle, `Failed to shift column '${actualColumnName}' by ${periods} periods`);
+            return new DataFrame(newHandle, wasm, this._autoCleanup);
+        } finally {
+            wasm.instance.exports.rozes_free_buffer(namePtr, nameBytes.length);
+        }
+    }
+
+    /**
+     * Compute first discrete difference (current - previous)
+     * @param {string} columnName - Name of the column
+     * @param {number} periods - Number of periods for difference (default = 1)
+     * @returns {DataFrame} - New DataFrame with difference values (first N periods are NaN)
+     * @example
+     * const df = DataFrame.fromCSV('value\n10\n15\n12\n20\n25\n');
+     * const diff = df.diff('value', 1);
+     * console.log(diff.column('value')); // [NaN, 5, -3, 8, 5]
+     */
+    diff(columnName, periods = 1) {
+        this._checkNotFreed();
+        const wasm = this._wasm;
+
+        if (!columnName || typeof columnName !== 'string') {
+            throw new Error('diff() requires a non-empty column name');
+        }
+
+        // Strip type hints (e.g., "value:Int64" → "value")
+        const colonIndex = columnName.indexOf(':');
+        const actualColumnName = colonIndex >= 0 ? columnName.substring(0, colonIndex) : columnName;
+
+        if (typeof periods !== 'number' || !Number.isInteger(periods) || periods <= 0) {
+            throw new Error('diff() requires periods to be a positive integer');
+        }
+
+        const nameBytes = new TextEncoder().encode(actualColumnName);
+        const namePtr = wasm.instance.exports.rozes_alloc(nameBytes.length);
+        const nameBuffer = new Uint8Array(wasm.memory.buffer, namePtr, nameBytes.length);
+        nameBuffer.set(nameBytes);
+
+        try {
+            const newHandle = wasm.instance.exports.rozes_diff(
+                this._handle,
+                namePtr,
+                nameBytes.length,
+                periods
+            );
+
+            checkResult(newHandle, `Failed to compute diff for column '${actualColumnName}' with periods ${periods}`);
+            return new DataFrame(newHandle, wasm, this._autoCleanup);
+        } finally {
+            wasm.instance.exports.rozes_free_buffer(namePtr, nameBytes.length);
+        }
+    }
+
+    /**
+     * Compute percentage change (percent difference from previous value)
+     * @param {string} columnName - Name of the column
+     * @param {number} periods - Number of periods for percent change (default = 1)
+     * @returns {DataFrame} - New DataFrame with percent change values (first N periods are NaN, zeros result in NaN)
+     * @example
+     * const df = DataFrame.fromCSV('value\n100\n110\n105\n120\n');
+     * const pctChange = df.pctChange('value', 1);
+     * console.log(pctChange.column('value')); // [NaN, 0.1, -0.045, 0.143]
+     */
+    pctChange(columnName, periods = 1) {
+        this._checkNotFreed();
+        const wasm = this._wasm;
+
+        if (!columnName || typeof columnName !== 'string') {
+            throw new Error('pctChange() requires a non-empty column name');
+        }
+
+        // Strip type hints (e.g., "value:Int64" → "value")
+        const colonIndex = columnName.indexOf(':');
+        const actualColumnName = colonIndex >= 0 ? columnName.substring(0, colonIndex) : columnName;
+
+        if (typeof periods !== 'number' || !Number.isInteger(periods) || periods <= 0) {
+            throw new Error('pctChange() requires periods to be a positive integer');
+        }
+
+        const nameBytes = new TextEncoder().encode(actualColumnName);
+        const namePtr = wasm.instance.exports.rozes_alloc(nameBytes.length);
+        const nameBuffer = new Uint8Array(wasm.memory.buffer, namePtr, nameBytes.length);
+        nameBuffer.set(nameBytes);
+
+        try {
+            const newHandle = wasm.instance.exports.rozes_pctChange(
+                this._handle,
+                namePtr,
+                nameBytes.length,
+                periods
+            );
+
+            checkResult(newHandle, `Failed to compute pctChange for column '${actualColumnName}' with periods ${periods}`);
+            return new DataFrame(newHandle, wasm, this._autoCleanup);
+        } finally {
+            wasm.instance.exports.rozes_free_buffer(namePtr, nameBytes.length);
+        }
+    }
+
+    /**
+     * Compute rolling sum over a window
+     * @param {string} columnName - Name of the column
+     * @param {number} window - Size of the rolling window
+     * @returns {DataFrame} - New DataFrame with rolling sum values (first window-1 values are NaN)
+     * @example
+     * const df = DataFrame.fromCSV('value\n10\n20\n30\n40\n50\n');
+     * const rolling = df.rollingSum('value', 3);
+     * console.log(rolling.column('value')); // [NaN, NaN, 60, 90, 120]
+     */
+    rollingSum(columnName, window) {
+        this._checkNotFreed();
+        const wasm = this._wasm;
+
+        if (!columnName || typeof columnName !== 'string') {
+            throw new Error('rollingSum() requires a non-empty column name');
+        }
+
+        // Strip type hints
+        const colonIndex = columnName.indexOf(':');
+        const actualColumnName = colonIndex >= 0 ? columnName.substring(0, colonIndex) : columnName;
+
+        if (typeof window !== 'number' || !Number.isInteger(window) || window <= 0) {
+            throw new Error('rollingSum() requires window to be a positive integer');
+        }
+
+        const nameBytes = new TextEncoder().encode(actualColumnName);
+        const namePtr = wasm.instance.exports.rozes_alloc(nameBytes.length);
+        const nameBuffer = new Uint8Array(wasm.memory.buffer, namePtr, nameBytes.length);
+        nameBuffer.set(nameBytes);
+
+        try {
+            const newHandle = wasm.instance.exports.rozes_rolling_sum(
+                this._handle,
+                namePtr,
+                nameBytes.length,
+                window
+            );
+
+            checkResult(newHandle, `Failed to compute rolling sum for column '${actualColumnName}' with window ${window}`);
+            return new DataFrame(newHandle, wasm, this._autoCleanup);
+        } finally {
+            wasm.instance.exports.rozes_free_buffer(namePtr, nameBytes.length);
+        }
+    }
+
+    /**
+     * Compute rolling mean over a window
+     * @param {string} columnName - Name of the column
+     * @param {number} window - Size of the rolling window
+     * @returns {DataFrame} - New DataFrame with rolling mean values (first window-1 values are NaN)
+     * @example
+     * const df = DataFrame.fromCSV('value\n10\n20\n30\n40\n50\n');
+     * const rolling = df.rollingMean('value', 3);
+     * console.log(rolling.column('value')); // [NaN, NaN, 20, 30, 40]
+     */
+    rollingMean(columnName, window) {
+        this._checkNotFreed();
+        const wasm = this._wasm;
+
+        if (!columnName || typeof columnName !== 'string') {
+            throw new Error('rollingMean() requires a non-empty column name');
+        }
+
+        // Strip type hints
+        const colonIndex = columnName.indexOf(':');
+        const actualColumnName = colonIndex >= 0 ? columnName.substring(0, colonIndex) : columnName;
+
+        if (typeof window !== 'number' || !Number.isInteger(window) || window <= 0) {
+            throw new Error('rollingMean() requires window to be a positive integer');
+        }
+
+        const nameBytes = new TextEncoder().encode(actualColumnName);
+        const namePtr = wasm.instance.exports.rozes_alloc(nameBytes.length);
+        const nameBuffer = new Uint8Array(wasm.memory.buffer, namePtr, nameBytes.length);
+        nameBuffer.set(nameBytes);
+
+        try {
+            const newHandle = wasm.instance.exports.rozes_rolling_mean(
+                this._handle,
+                namePtr,
+                nameBytes.length,
+                window
+            );
+
+            checkResult(newHandle, `Failed to compute rolling mean for column '${actualColumnName}' with window ${window}`);
+            return new DataFrame(newHandle, wasm, this._autoCleanup);
+        } finally {
+            wasm.instance.exports.rozes_free_buffer(namePtr, nameBytes.length);
+        }
+    }
+
+    /**
+     * Compute rolling minimum over a window
+     * @param {string} columnName - Name of the column
+     * @param {number} window - Size of the rolling window
+     * @returns {DataFrame} - New DataFrame with rolling min values (first window-1 values are NaN)
+     * @example
+     * const df = DataFrame.fromCSV('value\n30\n10\n20\n40\n50\n');
+     * const rolling = df.rollingMin('value', 3);
+     * console.log(rolling.column('value')); // [NaN, NaN, 10, 10, 20]
+     */
+    rollingMin(columnName, window) {
+        this._checkNotFreed();
+        const wasm = this._wasm;
+
+        if (!columnName || typeof columnName !== 'string') {
+            throw new Error('rollingMin() requires a non-empty column name');
+        }
+
+        // Strip type hints
+        const colonIndex = columnName.indexOf(':');
+        const actualColumnName = colonIndex >= 0 ? columnName.substring(0, colonIndex) : columnName;
+
+        if (typeof window !== 'number' || !Number.isInteger(window) || window <= 0) {
+            throw new Error('rollingMin() requires window to be a positive integer');
+        }
+
+        const nameBytes = new TextEncoder().encode(actualColumnName);
+        const namePtr = wasm.instance.exports.rozes_alloc(nameBytes.length);
+        const nameBuffer = new Uint8Array(wasm.memory.buffer, namePtr, nameBytes.length);
+        nameBuffer.set(nameBytes);
+
+        try {
+            const newHandle = wasm.instance.exports.rozes_rolling_min(
+                this._handle,
+                namePtr,
+                nameBytes.length,
+                window
+            );
+
+            checkResult(newHandle, `Failed to compute rolling min for column '${actualColumnName}' with window ${window}`);
+            return new DataFrame(newHandle, wasm, this._autoCleanup);
+        } finally {
+            wasm.instance.exports.rozes_free_buffer(namePtr, nameBytes.length);
+        }
+    }
+
+    /**
+     * Compute rolling maximum over a window
+     * @param {string} columnName - Name of the column
+     * @param {number} window - Size of the rolling window
+     * @returns {DataFrame} - New DataFrame with rolling max values (first window-1 values are NaN)
+     * @example
+     * const df = DataFrame.fromCSV('value\n30\n10\n20\n40\n50\n');
+     * const rolling = df.rollingMax('value', 3);
+     * console.log(rolling.column('value')); // [NaN, NaN, 30, 40, 50]
+     */
+    rollingMax(columnName, window) {
+        this._checkNotFreed();
+        const wasm = this._wasm;
+
+        if (!columnName || typeof columnName !== 'string') {
+            throw new Error('rollingMax() requires a non-empty column name');
+        }
+
+        // Strip type hints
+        const colonIndex = columnName.indexOf(':');
+        const actualColumnName = colonIndex >= 0 ? columnName.substring(0, colonIndex) : columnName;
+
+        if (typeof window !== 'number' || !Number.isInteger(window) || window <= 0) {
+            throw new Error('rollingMax() requires window to be a positive integer');
+        }
+
+        const nameBytes = new TextEncoder().encode(actualColumnName);
+        const namePtr = wasm.instance.exports.rozes_alloc(nameBytes.length);
+        const nameBuffer = new Uint8Array(wasm.memory.buffer, namePtr, nameBytes.length);
+        nameBuffer.set(nameBytes);
+
+        try {
+            const newHandle = wasm.instance.exports.rozes_rolling_max(
+                this._handle,
+                namePtr,
+                nameBytes.length,
+                window
+            );
+
+            checkResult(newHandle, `Failed to compute rolling max for column '${actualColumnName}' with window ${window}`);
+            return new DataFrame(newHandle, wasm, this._autoCleanup);
+        } finally {
+            wasm.instance.exports.rozes_free_buffer(namePtr, nameBytes.length);
+        }
+    }
+
+    /**
+     * Compute rolling standard deviation over a window
+     * @param {string} columnName - Name of the column
+     * @param {number} window - Size of the rolling window
+     * @returns {DataFrame} - New DataFrame with rolling std values (first window-1 values are NaN)
+     * @example
+     * const df = DataFrame.fromCSV('value\n10\n20\n30\n40\n50\n');
+     * const rolling = df.rollingStd('value', 3);
+     * console.log(rolling.column('value')); // [NaN, NaN, 10.0, 10.0, 10.0]
+     */
+    rollingStd(columnName, window) {
+        this._checkNotFreed();
+        const wasm = this._wasm;
+
+        if (!columnName || typeof columnName !== 'string') {
+            throw new Error('rollingStd() requires a non-empty column name');
+        }
+
+        // Strip type hints
+        const colonIndex = columnName.indexOf(':');
+        const actualColumnName = colonIndex >= 0 ? columnName.substring(0, colonIndex) : columnName;
+
+        if (typeof window !== 'number' || !Number.isInteger(window) || window <= 0) {
+            throw new Error('rollingStd() requires window to be a positive integer');
+        }
+
+        const nameBytes = new TextEncoder().encode(actualColumnName);
+        const namePtr = wasm.instance.exports.rozes_alloc(nameBytes.length);
+        const nameBuffer = new Uint8Array(wasm.memory.buffer, namePtr, nameBytes.length);
+        nameBuffer.set(nameBytes);
+
+        try {
+            const newHandle = wasm.instance.exports.rozes_rolling_std(
+                this._handle,
+                namePtr,
+                nameBytes.length,
+                window
+            );
+
+            checkResult(newHandle, `Failed to compute rolling std for column '${actualColumnName}' with window ${window}`);
+            return new DataFrame(newHandle, wasm, this._autoCleanup);
+        } finally {
+            wasm.instance.exports.rozes_free_buffer(namePtr, nameBytes.length);
+        }
+    }
+
+    /**
+     * Compute expanding sum (cumulative sum from start to current row)
+     * @param {string} columnName - Name of the column
+     * @returns {DataFrame} - New DataFrame with expanding sum values
+     * @example
+     * const df = DataFrame.fromCSV('value\n10\n20\n30\n40\n50\n');
+     * const expanding = df.expandingSum('value');
+     * console.log(expanding.column('value')); // [10, 30, 60, 100, 150]
+     */
+    expandingSum(columnName) {
+        this._checkNotFreed();
+        const wasm = this._wasm;
+
+        if (!columnName || typeof columnName !== 'string') {
+            throw new Error('expandingSum() requires a non-empty column name');
+        }
+
+        // Strip type hints
+        const colonIndex = columnName.indexOf(':');
+        const actualColumnName = colonIndex >= 0 ? columnName.substring(0, colonIndex) : columnName;
+
+        const nameBytes = new TextEncoder().encode(actualColumnName);
+        const namePtr = wasm.instance.exports.rozes_alloc(nameBytes.length);
+        const nameBuffer = new Uint8Array(wasm.memory.buffer, namePtr, nameBytes.length);
+        nameBuffer.set(nameBytes);
+
+        try {
+            const newHandle = wasm.instance.exports.rozes_expanding_sum(
+                this._handle,
+                namePtr,
+                nameBytes.length
+            );
+
+            checkResult(newHandle, `Failed to compute expanding sum for column '${actualColumnName}'`);
+            return new DataFrame(newHandle, wasm, this._autoCleanup);
+        } finally {
+            wasm.instance.exports.rozes_free_buffer(namePtr, nameBytes.length);
+        }
+    }
+
+    /**
+     * Compute expanding mean (cumulative mean from start to current row)
+     * @param {string} columnName - Name of the column
+     * @returns {DataFrame} - New DataFrame with expanding mean values
+     * @example
+     * const df = DataFrame.fromCSV('value\n10\n20\n30\n40\n50\n');
+     * const expanding = df.expandingMean('value');
+     * console.log(expanding.column('value')); // [10, 15, 20, 25, 30]
+     */
+    expandingMean(columnName) {
+        this._checkNotFreed();
+        const wasm = this._wasm;
+
+        if (!columnName || typeof columnName !== 'string') {
+            throw new Error('expandingMean() requires a non-empty column name');
+        }
+
+        // Strip type hints
+        const colonIndex = columnName.indexOf(':');
+        const actualColumnName = colonIndex >= 0 ? columnName.substring(0, colonIndex) : columnName;
+
+        const nameBytes = new TextEncoder().encode(actualColumnName);
+        const namePtr = wasm.instance.exports.rozes_alloc(nameBytes.length);
+        const nameBuffer = new Uint8Array(wasm.memory.buffer, namePtr, nameBytes.length);
+        nameBuffer.set(nameBytes);
+
+        try {
+            const newHandle = wasm.instance.exports.rozes_expanding_mean(
+                this._handle,
+                namePtr,
+                nameBytes.length
+            );
+
+            checkResult(newHandle, `Failed to compute expanding mean for column '${actualColumnName}'`);
+            return new DataFrame(newHandle, wasm, this._autoCleanup);
+        } finally {
+            wasm.instance.exports.rozes_free_buffer(namePtr, nameBytes.length);
+        }
+    }
+
+    /**
+     * Pivot DataFrame from long format to wide format
+     *
+     * @param {Object} options - Pivot options
+     * @param {string} options.index - Column for row labels
+     * @param {string} options.columns - Column to pivot (becomes new columns)
+     * @param {string} options.values - Column containing values to aggregate
+     * @param {string} [options.aggfunc='sum'] - Aggregation function: 'sum', 'mean', 'count', 'min', 'max'
+     * @returns {DataFrame} New DataFrame with pivoted data
+     *
+     * @example
+     * const df = rozes.DataFrame.fromCSV('date,region,sales\n2024-01-01,East,100\n2024-01-01,West,200');
+     * const pivoted = df.pivot({ index: 'date', columns: 'region', values: 'sales' });
+     * // Result: date, East, West
+     * //         2024-01-01, 100, 200
+     */
+    pivot(options) {
+        if (this._freed) {
+            throw new Error('Cannot pivot a freed DataFrame');
+        }
+
+        // Validate options
+        if (!options || typeof options !== 'object') {
+            throw new Error('pivot() requires an options object');
+        }
+        if (!options.index || typeof options.index !== 'string') {
+            throw new Error('pivot() requires index column name (string)');
+        }
+        if (!options.columns || typeof options.columns !== 'string') {
+            throw new Error('pivot() requires columns column name (string)');
+        }
+        if (!options.values || typeof options.values !== 'string') {
+            throw new Error('pivot() requires values column name (string)');
+        }
+
+        const aggfunc = options.aggfunc || 'sum';
+        const validAggFuncs = ['sum', 'mean', 'count', 'min', 'max'];
+        if (!validAggFuncs.includes(aggfunc)) {
+            throw new Error(`pivot() aggfunc must be one of: ${validAggFuncs.join(', ')}`);
+        }
+
+        const wasm = this._wasm;
+        const optionsJson = JSON.stringify({
+            index: options.index,
+            columns: options.columns,
+            values: options.values,
+            aggfunc: aggfunc
+        });
+
+        const optionsBytes = new TextEncoder().encode(optionsJson);
+        const optionsPtr = wasm.instance.exports.rozes_alloc(optionsBytes.length);
+
+        try {
+            new Uint8Array(wasm.memory.buffer, optionsPtr, optionsBytes.length).set(optionsBytes);
+
+            const newHandle = wasm.instance.exports.rozes_pivot(
+                this._handle,
+                optionsPtr,
+                optionsBytes.length
+            );
+
+            checkResult(newHandle, `Failed to pivot DataFrame`);
+            return new DataFrame(newHandle, wasm, this._autoCleanup);
+        } finally {
+            wasm.instance.exports.rozes_free_buffer(optionsPtr, optionsBytes.length);
+        }
+    }
+
+    /**
+     * Melt DataFrame from wide format to long format (unpivot)
+     *
+     * @param {Object} options - Melt options
+     * @param {string[]} options.id_vars - Columns to preserve as identifiers
+     * @param {string[]} [options.value_vars] - Columns to melt (if null, melt all non-id columns)
+     * @param {string} [options.var_name='variable'] - Name for the variable column
+     * @param {string} [options.value_name='value'] - Name for the value column
+     * @returns {DataFrame} New DataFrame with melted data
+     *
+     * @example
+     * const df = rozes.DataFrame.fromCSV('date,East,West\n2024-01-01,100,200');
+     * const melted = df.melt({ id_vars: ['date'], var_name: 'region', value_name: 'sales' });
+     * // Result: date, region, sales
+     * //         2024-01-01, East, 100
+     * //         2024-01-01, West, 200
+     */
+    melt(options) {
+        if (this._freed) {
+            throw new Error('Cannot melt a freed DataFrame');
+        }
+
+        // Validate options
+        if (!options || typeof options !== 'object') {
+            throw new Error('melt() requires an options object');
+        }
+        if (!Array.isArray(options.id_vars)) {
+            throw new Error('melt() requires id_vars to be an array of column names');
+        }
+        if (options.value_vars && !Array.isArray(options.value_vars)) {
+            throw new Error('melt() value_vars must be an array of column names');
+        }
+
+        const wasm = this._wasm;
+        const optionsJson = JSON.stringify({
+            id_vars: options.id_vars,
+            value_vars: options.value_vars || null,
+            var_name: options.var_name || 'variable',
+            value_name: options.value_name || 'value'
+        });
+
+        const optionsBytes = new TextEncoder().encode(optionsJson);
+        const optionsPtr = wasm.instance.exports.rozes_alloc(optionsBytes.length);
+
+        try {
+            new Uint8Array(wasm.memory.buffer, optionsPtr, optionsBytes.length).set(optionsBytes);
+
+            const newHandle = wasm.instance.exports.rozes_melt(
+                this._handle,
+                optionsPtr,
+                optionsBytes.length
+            );
+
+            checkResult(newHandle, `Failed to melt DataFrame`);
+            return new DataFrame(newHandle, wasm, this._autoCleanup);
+        } finally {
+            wasm.instance.exports.rozes_free_buffer(optionsPtr, optionsBytes.length);
+        }
+    }
+
+    /**
+     * Transpose DataFrame - swap rows and columns
+     *
+     * @returns {DataFrame} New DataFrame with transposed data
+     *
+     * @example
+     * const df = rozes.DataFrame.fromCSV('A,B,C\n1,2,3\n4,5,6');
+     * const transposed = df.transpose();
+     * // Result: row_0, row_1
+     * //         1, 4
+     * //         2, 5
+     * //         3, 6
+     */
+    transpose() {
+        if (this._freed) {
+            throw new Error('Cannot transpose a freed DataFrame');
+        }
+
+        const wasm = this._wasm;
+        const newHandle = wasm.instance.exports.rozes_transpose(this._handle);
+
+        checkResult(newHandle, `Failed to transpose DataFrame`);
+        return new DataFrame(newHandle, wasm, this._autoCleanup);
+    }
+
+    /**
+     * Stack DataFrame - convert wide format to long format (simpler API than melt)
+     *
+     * @param {Object} options - Stack options
+     * @param {string} options.id_column - Column to use as identifier
+     * @param {string} [options.var_name='variable'] - Name for the variable column
+     * @param {string} [options.value_name='value'] - Name for the value column
+     * @returns {DataFrame} New DataFrame with stacked data
+     *
+     * @example
+     * const df = rozes.DataFrame.fromCSV('id,A,B,C\n1,10,20,30\n2,40,50,60');
+     * const stacked = df.stack({ id_column: 'id' });
+     * // Result: id, variable, value
+     * //         1, A, 10
+     * //         1, B, 20
+     * //         1, C, 30
+     * //         2, A, 40
+     * //         ...
+     */
+    stack(options) {
+        if (this._freed) {
+            throw new Error('Cannot stack a freed DataFrame');
+        }
+
+        // Validate options
+        if (!options || typeof options !== 'object') {
+            throw new Error('stack() requires an options object');
+        }
+        if (!options.id_column || typeof options.id_column !== 'string') {
+            throw new Error('stack() requires id_column (string)');
+        }
+
+        const wasm = this._wasm;
+        const optionsJson = JSON.stringify({
+            id_column: options.id_column,
+            var_name: options.var_name || 'variable',
+            value_name: options.value_name || 'value'
+        });
+
+        const optionsBytes = new TextEncoder().encode(optionsJson);
+        const optionsPtr = wasm.instance.exports.rozes_alloc(optionsBytes.length);
+
+        try {
+            new Uint8Array(wasm.memory.buffer, optionsPtr, optionsBytes.length).set(optionsBytes);
+
+            const newHandle = wasm.instance.exports.rozes_stack(
+                this._handle,
+                optionsPtr,
+                optionsBytes.length
+            );
+
+            checkResult(newHandle, `Failed to stack DataFrame`);
+            return new DataFrame(newHandle, wasm, this._autoCleanup);
+        } finally {
+            wasm.instance.exports.rozes_free_buffer(optionsPtr, optionsBytes.length);
+        }
+    }
+
+    /**
+     * Unstack DataFrame - convert long format to wide format (inverse of stack)
+     *
+     * @param {Object} options - Unstack options
+     * @param {string} options.index - Column for index values
+     * @param {string} options.columns - Column with variable names (becomes new columns)
+     * @param {string} options.values - Column with values to populate
+     * @returns {DataFrame} New DataFrame with unstacked data
+     *
+     * @example
+     * const df = rozes.DataFrame.fromCSV('id,variable,value\n1,A,10\n1,B,20\n2,A,40\n2,B,50');
+     * const unstacked = df.unstack({ index: 'id', columns: 'variable', values: 'value' });
+     * // Result: id, A, B
+     * //         1, 10, 20
+     * //         2, 40, 50
+     */
+    unstack(options) {
+        if (this._freed) {
+            throw new Error('Cannot unstack a freed DataFrame');
+        }
+
+        // Validate options
+        if (!options || typeof options !== 'object') {
+            throw new Error('unstack() requires an options object');
+        }
+        if (!options.index || typeof options.index !== 'string') {
+            throw new Error('unstack() requires index column name (string)');
+        }
+        if (!options.columns || typeof options.columns !== 'string') {
+            throw new Error('unstack() requires columns column name (string)');
+        }
+        if (!options.values || typeof options.values !== 'string') {
+            throw new Error('unstack() requires values column name (string)');
+        }
+
+        const wasm = this._wasm;
+        const optionsJson = JSON.stringify({
+            index: options.index,
+            columns: options.columns,
+            values: options.values
+        });
+
+        const optionsBytes = new TextEncoder().encode(optionsJson);
+        const optionsPtr = wasm.instance.exports.rozes_alloc(optionsBytes.length);
+
+        try {
+            new Uint8Array(wasm.memory.buffer, optionsPtr, optionsBytes.length).set(optionsBytes);
+
+            const newHandle = wasm.instance.exports.rozes_unstack(
+                this._handle,
+                optionsPtr,
+                optionsBytes.length
+            );
+
+            checkResult(newHandle, `Failed to unstack DataFrame`);
+            return new DataFrame(newHandle, wasm, this._autoCleanup);
+        } finally {
+            wasm.instance.exports.rozes_free_buffer(optionsPtr, optionsBytes.length);
+        }
+    }
+
+    /**
      * Pretty-print DataFrame info
      * @returns {string}
      */
@@ -1533,7 +2733,7 @@ class StringAccessor {
             throw new RozesError(ErrorCode.InvalidInput, 'slice() end must be a non-negative integer');
         }
         if (start > end) {
-            throw new RozesError(ErrorCode.InvalidInput, 'slice() start must be <= end');
+            throw new RozesError(ErrorCode.InvalidRange, 'slice() invalid range: start must be <= end');
         }
 
         const colBytes = new TextEncoder().encode(columnName);

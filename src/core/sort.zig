@@ -363,7 +363,7 @@ fn reorderDataFrame(
     var result = try DataFrame.create(allocator, df.column_descs, df.row_count);
     errdefer result.deinit();
 
-    const arena_alloc = result.arena.allocator();
+    const result_allocator = result.getAllocator();
 
     // Copy each column in the new order
     var col_idx: u32 = 0;
@@ -371,7 +371,7 @@ fn reorderDataFrame(
         const src_col = &df.columns[col_idx];
         const dst_col = &result.columns[col_idx];
 
-        try reorderColumn(src_col, dst_col, indices, arena_alloc);
+        try reorderColumn(src_col, dst_col, indices, result_allocator);
     }
     std.debug.assert(col_idx == df.columns.len); // Post-condition #3: All columns copied
 

@@ -62,11 +62,13 @@ fn stringsToColumn(allocator: Allocator, strings: [][]const u8) !StringColumn {
 ///
 /// **Complexity**: O(n) where n = total string length
 pub fn lower(series: *const Series, allocator: Allocator) !Series {
-    // Tiger Style: Assertions
-    std.debug.assert(series.value_type == .String);
-    std.debug.assert(series.length > 0);
-
+    // Tiger Style: Error checks FIRST
     if (series.value_type != .String) return error.InvalidType;
+
+    // Tiger Style: Assertions AFTER error checks
+    std.debug.assert(series.value_type == .String);
+    // NOTE: series.length can be 0 for empty DataFrames
+    // Individual strings can also be empty (length 0)
 
     const strings = series.data.String;
 
@@ -124,11 +126,13 @@ pub fn lower(series: *const Series, allocator: Allocator) !Series {
 ///
 /// **Complexity**: O(n) where n = total string length
 pub fn upper(series: *const Series, allocator: Allocator) !Series {
-    // Tiger Style: Assertions
-    std.debug.assert(series.value_type == .String);
-    std.debug.assert(series.length > 0);
-
+    // Tiger Style: Error checks FIRST
     if (series.value_type != .String) return error.InvalidType;
+
+    // Tiger Style: Assertions AFTER error checks
+    std.debug.assert(series.value_type == .String);
+    // NOTE: series.length can be 0 for empty DataFrames
+    // Individual strings can also be empty (length 0)
 
     const strings = series.data.String;
 
@@ -178,11 +182,13 @@ pub fn upper(series: *const Series, allocator: Allocator) !Series {
 
 /// Remove leading and trailing whitespace
 pub fn trim(series: *const Series, allocator: Allocator) !Series {
-    // Tiger Style: Assertions
-    std.debug.assert(series.value_type == .String);
-    std.debug.assert(series.length > 0);
-
+    // Tiger Style: Error checks FIRST
     if (series.value_type != .String) return error.InvalidType;
+
+    // Tiger Style: Assertions AFTER error checks
+    std.debug.assert(series.value_type == .String);
+    // NOTE: series.length can be 0 for empty DataFrames
+    // Individual strings can also be empty (length 0)
 
     const strings = series.data.String;
 
@@ -222,11 +228,13 @@ pub fn strip(series: *const Series, allocator: Allocator) !Series {
 
 /// Check if string contains a substring
 pub fn contains(series: *const Series, allocator: Allocator, pattern: []const u8) !Series {
-    // Tiger Style: Assertions
-    std.debug.assert(series.value_type == .String);
-    std.debug.assert(series.length > 0);
-
+    // Tiger Style: Error checks FIRST
     if (series.value_type != .String) return error.InvalidType;
+
+    // Tiger Style: Assertions AFTER error checks
+    std.debug.assert(series.value_type == .String);
+    // NOTE: series.length can be 0 for empty DataFrames
+    // Individual strings can also be empty (length 0)
 
     const strings = series.data.String;
     const result = try allocator.alloc(bool, series.length);
@@ -257,13 +265,15 @@ pub fn contains(series: *const Series, allocator: Allocator, pattern: []const u8
 
 /// Replace all occurrences of a substring
 pub fn replace(series: *const Series, allocator: Allocator, from: []const u8, to: []const u8) !Series {
-    // Tiger Style: Assertions
-    std.debug.assert(series.value_type == .String);
-    std.debug.assert(series.length > 0);
-    std.debug.assert(from.len > 0);
-
+    // Tiger Style: Error checks FIRST
     if (series.value_type != .String) return error.InvalidType;
     if (from.len == 0) return error.EmptyPattern;
+
+    // Tiger Style: Assertions AFTER error checks
+    std.debug.assert(series.value_type == .String);
+    std.debug.assert(from.len > 0); // Post-condition from error check
+    // NOTE: series.length can be 0 for empty DataFrames
+    // Individual strings can also be empty (length 0)
 
     const strings = series.data.String;
 
@@ -368,8 +378,9 @@ pub fn slice(series: *const Series, allocator: Allocator, start: u32, end: u32) 
 
     // Tiger Style: Assertions AFTER error checks
     std.debug.assert(series.value_type == .String);
-    std.debug.assert(series.length > 0);
     std.debug.assert(start <= end); // Post-condition from error check
+    // NOTE: series.length can be 0 for empty DataFrames
+    // Individual strings can also be empty (length 0)
 
     const strings = series.data.String;
 
@@ -403,11 +414,13 @@ pub fn slice(series: *const Series, allocator: Allocator, start: u32, end: u32) 
 
 /// Get string length for each element
 pub fn len(series: *const Series, allocator: Allocator) !Series {
-    // Tiger Style: Assertions
-    std.debug.assert(series.value_type == .String);
-    std.debug.assert(series.length > 0);
-
+    // Tiger Style: Error checks FIRST
     if (series.value_type != .String) return error.InvalidType;
+
+    // Tiger Style: Assertions AFTER error checks
+    std.debug.assert(series.value_type == .String);
+    // NOTE: series.length can be 0 for empty DataFrames
+    // Individual strings can also be empty (length 0)
 
     const strings = series.data.String;
     const result = try allocator.alloc(i64, series.length);
@@ -468,13 +481,15 @@ pub const SplitResult = struct {
 
 /// Split string by delimiter (returns array of Series)
 pub fn split(series: *const Series, allocator: Allocator, delimiter: []const u8) !SplitResult {
-    // Tiger Style: Assertions
-    std.debug.assert(series.value_type == .String);
-    std.debug.assert(series.length > 0);
-    std.debug.assert(delimiter.len > 0);
-
+    // Tiger Style: Error checks FIRST
     if (series.value_type != .String) return error.InvalidType;
     if (delimiter.len == 0) return error.EmptyDelimiter;
+
+    // Tiger Style: Assertions AFTER error checks
+    std.debug.assert(series.value_type == .String);
+    std.debug.assert(delimiter.len > 0); // Post-condition from error check
+    // NOTE: series.length can be 0 for empty DataFrames
+    // Individual strings can also be empty (length 0)
 
     const strings = series.data.String;
 
@@ -553,11 +568,13 @@ pub fn split(series: *const Series, allocator: Allocator, delimiter: []const u8)
 
 /// Check if string starts with a prefix
 pub fn startsWith(series: *const Series, allocator: Allocator, prefix: []const u8) !Series {
-    // Tiger Style: Assertions
-    std.debug.assert(series.value_type == .String);
-    std.debug.assert(series.length > 0);
-
+    // Tiger Style: Error checks FIRST
     if (series.value_type != .String) return error.InvalidType;
+
+    // Tiger Style: Assertions AFTER error checks
+    std.debug.assert(series.value_type == .String);
+    // NOTE: series.length can be 0 for empty DataFrames
+    // Individual strings can also be empty (length 0)
 
     const strings = series.data.String;
     const result = try allocator.alloc(bool, series.length);
@@ -586,11 +603,13 @@ pub fn startsWith(series: *const Series, allocator: Allocator, prefix: []const u
 
 /// Check if string ends with a suffix
 pub fn endsWith(series: *const Series, allocator: Allocator, suffix: []const u8) !Series {
-    // Tiger Style: Assertions
-    std.debug.assert(series.value_type == .String);
-    std.debug.assert(series.length > 0);
-
+    // Tiger Style: Error checks FIRST
     if (series.value_type != .String) return error.InvalidType;
+
+    // Tiger Style: Assertions AFTER error checks
+    std.debug.assert(series.value_type == .String);
+    // NOTE: series.length can be 0 for empty DataFrames
+    // Individual strings can also be empty (length 0)
 
     const strings = series.data.String;
     const result = try allocator.alloc(bool, series.length);

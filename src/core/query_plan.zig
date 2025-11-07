@@ -3,6 +3,7 @@
 
 const std = @import("std");
 const DataFrame = @import("dataframe.zig").DataFrame;
+const RowRef = @import("dataframe.zig").RowRef;
 const Allocator = std.mem.Allocator;
 
 /// Maximum query plan depth (prevent unbounded recursion)
@@ -22,8 +23,8 @@ pub const OperationType = enum {
     Map, // Element-wise transformation
 };
 
-/// Filter predicate function signature
-pub const FilterFn = *const fn (row_idx: u32, df: *const DataFrame) bool;
+/// Filter predicate function signature (matches operations.zig)
+pub const FilterFn = *const fn (row: RowRef) bool;
 
 /// Map function signature
 pub const MapFn = *const fn (value: f64) f64;
@@ -63,13 +64,20 @@ pub const QueryPlan = struct {
     pub fn init(allocator: Allocator) QueryPlan {
         return .{
             .allocator = allocator,
-            .operations = std.ArrayList(Operation).init(allocator),
+            .operations = std.ArrayList(Operation).initCapacity(allocator, 16) catch {
+                // If allocation fails, return with empty list
+                return .{
+                    .allocator = allocator,
+                    .operations = std.ArrayList(Operation){ .items = &.{}, .capacity = 0 },
+                    .source_df = null,
+                };
+            },
             .source_df = null,
         };
     }
 
     pub fn deinit(self: *QueryPlan) void {
-        self.operations.deinit();
+        self.operations.deinit(self.allocator);
     }
 
     /// Add filter operation to plan
@@ -80,7 +88,7 @@ pub const QueryPlan = struct {
             .op_type = .Filter,
             .filter_fn = filter_fn,
         };
-        try self.operations.append(op);
+        try self.operations.append(self.allocator, op);
     }
 
     /// Add select (projection) operation to plan
@@ -92,7 +100,7 @@ pub const QueryPlan = struct {
             .op_type = .Select,
             .column_names = columns,
         };
-        try self.operations.append(op);
+        try self.operations.append(self.allocator, op);
     }
 
     /// Add limit operation to plan
@@ -104,7 +112,7 @@ pub const QueryPlan = struct {
             .op_type = .Limit,
             .limit_count = count,
         };
-        try self.operations.append(op);
+        try self.operations.append(self.allocator, op);
     }
 
     /// Get operation count

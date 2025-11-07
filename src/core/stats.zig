@@ -390,14 +390,15 @@ fn computeCorrelation(
     const col1 = df.column(col1_name) orelse return error.ColumnNotFound;
     const col2 = df.column(col2_name) orelse return error.ColumnNotFound;
 
+    // Both columns must be numeric (Int64 or Float64)
+    if (!isNumericColumn(col1) or !isNumericColumn(col2)) {
+        return error.TypeMismatch;
+    }
+
     const mean1 = computeMean(df, col1) orelse return error.TypeMismatch;
     const mean2 = computeMean(df, col2) orelse return error.TypeMismatch;
 
-    // Extract numeric data
-    const data1 = extractNumericData(col1) orelse return error.TypeMismatch;
-    const data2 = extractNumericData(col2) orelse return error.TypeMismatch;
-
-    std.debug.assert(data1.len == data2.len); // Same length
+    std.debug.assert(col1.length == col2.length); // Same length
 
     // Compute correlation: cov(X,Y) / (stdDev(X) * stdDev(Y))
     var sum_xy: f64 = 0.0;
@@ -405,20 +406,46 @@ fn computeCorrelation(
     var sum_yy: f64 = 0.0;
 
     var idx: u32 = 0;
-    while (idx < MAX_ROWS and idx < data1.len) : (idx += 1) {
-        const dx = data1[idx] - mean1;
-        const dy = data2[idx] - mean2;
+    while (idx < MAX_ROWS and idx < col1.length) : (idx += 1) {
+        const val1 = getNumericValue(col1, idx);
+        const val2 = getNumericValue(col2, idx);
+
+        const dx = val1 - mean1;
+        const dy = val2 - mean2;
 
         sum_xy += dx * dy;
         sum_xx += dx * dx;
         sum_yy += dy * dy;
     }
-    std.debug.assert(idx == data1.len); // Processed all values
+    std.debug.assert(idx == col1.length); // Processed all values
 
     // Handle zero variance cases
     if (sum_xx == 0.0 or sum_yy == 0.0) return 0.0;
 
     return sum_xy / @sqrt(sum_xx * sum_yy);
+}
+
+/// Helper to check if column is numeric (Int64 or Float64)
+fn isNumericColumn(col: *const Series) bool {
+    return col.value_type == .Int64 or col.value_type == .Float64;
+}
+
+/// Helper to get numeric value from column as f64 (handles Int64 and Float64)
+fn getNumericValue(col: *const Series, idx: u32) f64 {
+    std.debug.assert(idx < col.length); // Valid index
+    std.debug.assert(isNumericColumn(col)); // Must be numeric
+
+    return switch (col.value_type) {
+        .Int64 => blk: {
+            const data = col.asInt64() orelse unreachable;
+            break :blk @as(f64, @floatFromInt(data[idx]));
+        },
+        .Float64 => blk: {
+            const data = col.asFloat64() orelse unreachable;
+            break :blk data[idx];
+        },
+        else => unreachable,
+    };
 }
 
 /// Helper to extract numeric data from column as f64 array
@@ -1007,11 +1034,123 @@ fn valueCountsString(
     std.debug.assert(series.value_type == .String); // Type check
     std.debug.assert(series.length > 0); // Need data
 
-    // TODO: Implement string value counts
-    // Requires StringHashMap support
-    _ = allocator;
-    _ = options;
-    return error.NotImplemented;
+    const col = series.asStringColumn() orelse return error.TypeMismatch;
+
+    // Use StringHashMap for counting
+    var counts = std.StringHashMap(u32).init(allocator);
+    defer counts.deinit();
+
+    var i: u32 = 0;
+    while (i < MAX_ROWS and i < series.length) : (i += 1) {
+        const str = col.get(i);
+        const entry = try counts.getOrPut(str);
+        if (!entry.found_existing) {
+            entry.value_ptr.* = 1;
+        } else {
+            entry.value_ptr.* += 1;
+        }
+    }
+    std.debug.assert(i == series.length); // Counted all
+
+    // Convert to sorted array
+    const count_size: u32 = @intCast(counts.count());
+
+    var pairs = allocator.alloc(StringValueCountPair, count_size) catch |err| {
+        const size_mb = (count_size * @sizeOf(StringValueCountPair)) / 1_000_000;
+        std.log.err("valueCountsString: Failed to allocate {d} MB for {d} unique values (series '{s}'): {}", .{ size_mb, count_size, series.name, err });
+        return error.OutOfMemory;
+    };
+    defer allocator.free(pairs);
+
+    var iter = counts.iterator();
+    var idx: u32 = 0;
+    const MAX_ITERATIONS: u32 = 10_000; // Reasonable unique value limit
+    while (iter.next()) |entry| : (idx += 1) {
+        std.debug.assert(idx < count_size); // Pre-condition
+        std.debug.assert(idx < MAX_ITERATIONS); // Bounds check
+
+        pairs[idx] = .{
+            .value = entry.key_ptr.*,
+            .count = entry.value_ptr.*,
+        };
+    }
+    std.debug.assert(idx == count_size); // All pairs extracted
+    std.debug.assert(idx <= MAX_ITERATIONS); // Post-condition
+
+    // Sort by count descending if requested
+    if (options.sort) {
+        std.mem.sort(StringValueCountPair, pairs, {}, struct {
+            fn lessThan(_: void, a: StringValueCountPair, b: StringValueCountPair) bool {
+                return a.count > b.count; // Descending order
+            }
+        }.lessThan);
+    }
+
+    // Create DataFrame with value and count columns
+    return try buildStringValueCountsDataFrame(allocator, pairs, series.length, options.normalize);
+}
+
+/// String-count pair type for valueCounts
+const StringValueCountPair = struct {
+    value: []const u8,
+    count: u32,
+};
+
+/// Helper to build DataFrame from String value-count pairs
+fn buildStringValueCountsDataFrame(
+    allocator: Allocator,
+    pairs: []const StringValueCountPair,
+    total: u32,
+    normalize: bool,
+) !DataFrame {
+    std.debug.assert(pairs.len > 0); // Have unique values
+    std.debug.assert(total > 0); // Have total count
+
+    // Import DataFrame to create result
+    const df_mod = @import("dataframe.zig");
+    const ColumnDesc = df_mod.ColumnDesc;
+
+    const row_count: u32 = @intCast(pairs.len);
+
+    // Define columns
+    const column_descs = [_]ColumnDesc{
+        ColumnDesc.init("value", .String, 0),
+        ColumnDesc.init("count", .Float64, 1),
+    };
+
+    // Create DataFrame with column specifications
+    var df = try df_mod.DataFrame.create(allocator, &column_descs, row_count);
+    errdefer df.deinit();
+
+    // Fill value column using append (StringColumn API)
+    const value_col = df.columnMut("value") orelse return error.ColumnNotFound;
+
+    var i: u32 = 0;
+    while (i < MAX_ROWS and i < pairs.len) : (i += 1) {
+        try value_col.appendString(allocator, pairs[i].value);
+    }
+    std.debug.assert(i == row_count); // Filled all values
+    std.debug.assert(value_col.length == row_count); // Length updated by append
+
+    // Fill count column
+    const count_col = df.columnMut("count") orelse return error.ColumnNotFound;
+    const count_data = count_col.asFloat64Buffer() orelse return error.TypeMismatch;
+
+    i = 0;
+    while (i < MAX_ROWS and i < pairs.len) : (i += 1) {
+        if (normalize) {
+            count_data[i] = @as(f64, @floatFromInt(pairs[i].count)) / @as(f64, @floatFromInt(total));
+        } else {
+            count_data[i] = @as(f64, @floatFromInt(pairs[i].count));
+        }
+    }
+    std.debug.assert(i == row_count); // Filled all counts
+    count_col.length = row_count;
+
+    // Set row count
+    df.row_count = row_count;
+
+    return df;
 }
 
 /// Helper function for Categorical value counts

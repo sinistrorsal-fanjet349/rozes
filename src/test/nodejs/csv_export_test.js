@@ -4,8 +4,8 @@
  * Tests: toCSV() with various options and edge cases
  */
 
-import { Rozes } from '../../../dist/index.js';
-import { readFileSync } from 'fs';
+import { Rozes } from '../../../dist/index.mjs';
+import { readFileSync, writeFileSync, unlinkSync, existsSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 
@@ -15,10 +15,9 @@ const __dirname = dirname(__filename);
 async function main() {
   console.log('🧪 Testing CSV Export (Priority 5)\n');
 
-  // Initialize Rozes by reading Wasm binary directly (for Node.js)
-  const wasmPath = join(__dirname, '../../../dist/rozes.wasm');
-  const wasmBinary = readFileSync(wasmPath);
-  const rozes = await Rozes.init(wasmBinary);
+  // Initialize Rozes
+  const wasmPath = join(__dirname, '../../../zig-out/bin/rozes.wasm');
+  const rozes = await Rozes.init(wasmPath);
   console.log('✅ Rozes initialized (version:', rozes.version, ')\n');
 
   let passedTests = 0;
@@ -343,6 +342,128 @@ Alice,30`;
     const lines = csvOutput.trim().split('\n');
     if (lines.length !== 1 || !lines[0].includes('name,age,score')) {
       throw new Error('Expected only header row for empty DataFrame');
+    }
+  });
+
+  // ============================================================================
+  // Test 7: File I/O (toCSVFile)
+  // ============================================================================
+
+  test('toCSVFile() basic file write', () => {
+    const csvInput = `name,age,score
+Alice,30,95.5
+Bob,25,87.3`;
+    const df = rozes.DataFrame.fromCSV(csvInput);
+    const outputPath = join(__dirname, 'test_output.csv');
+
+    try {
+      df.toCSVFile(outputPath);
+      df.free();
+
+      // Verify file exists
+      if (!existsSync(outputPath)) {
+        throw new Error('File was not created');
+      }
+
+      // Verify file content
+      const fileContent = readFileSync(outputPath, 'utf8');
+      if (!fileContent.includes('name,age,score')) {
+        throw new Error('Expected headers in file');
+      }
+      if (!fileContent.includes('Alice,30,95.5')) {
+        throw new Error('Expected data row in file');
+      }
+    } finally {
+      // Clean up
+      if (existsSync(outputPath)) {
+        unlinkSync(outputPath);
+      }
+    }
+  });
+
+  test('toCSVFile() with custom delimiter (TSV)', () => {
+    const csvInput = `name,age,score
+Alice,30,95.5
+Bob,25,87.3`;
+    const df = rozes.DataFrame.fromCSV(csvInput);
+    const outputPath = join(__dirname, 'test_output.tsv');
+
+    try {
+      df.toCSVFile(outputPath, { delimiter: '\t' });
+      df.free();
+
+      // Verify file content uses tabs
+      const fileContent = readFileSync(outputPath, 'utf8');
+      if (!fileContent.includes('name\tage\tscore')) {
+        throw new Error('Expected tab-separated headers');
+      }
+      if (!fileContent.includes('Alice\t30\t95.5')) {
+        throw new Error('Expected tab-separated data');
+      }
+    } finally {
+      // Clean up
+      if (existsSync(outputPath)) {
+        unlinkSync(outputPath);
+      }
+    }
+  });
+
+  test('toCSVFile() without headers', () => {
+    const csvInput = `name,age
+Alice,30
+Bob,25`;
+    const df = rozes.DataFrame.fromCSV(csvInput);
+    const outputPath = join(__dirname, 'test_output_no_headers.csv');
+
+    try {
+      df.toCSVFile(outputPath, { has_headers: false });
+      df.free();
+
+      // Verify file content has no headers
+      const fileContent = readFileSync(outputPath, 'utf8');
+      if (fileContent.includes('name,age')) {
+        throw new Error('Should not have headers');
+      }
+      if (!fileContent.includes('Alice,30')) {
+        throw new Error('Expected data row');
+      }
+    } finally {
+      // Clean up
+      if (existsSync(outputPath)) {
+        unlinkSync(outputPath);
+      }
+    }
+  });
+
+  test('toCSVFile() round-trip (write and read back)', () => {
+    const csvInput = `name,age,city
+Alice,30,NYC
+Bob,25,LA
+Charlie,35,SF`;
+    const df = rozes.DataFrame.fromCSV(csvInput);
+    const outputPath = join(__dirname, 'test_roundtrip.csv');
+
+    try {
+      df.toCSVFile(outputPath);
+      df.free();
+
+      // Read back the file
+      const fileContent = readFileSync(outputPath, 'utf8');
+      const df2 = rozes.DataFrame.fromCSV(fileContent);
+      const shape = df2.shape;
+      df2.free();
+
+      if (shape.rows !== 3) {
+        throw new Error(`Expected 3 rows, got ${shape.rows}`);
+      }
+      if (shape.cols !== 3) {
+        throw new Error(`Expected 3 cols, got ${shape.cols}`);
+      }
+    } finally {
+      // Clean up
+      if (existsSync(outputPath)) {
+        unlinkSync(outputPath);
+      }
     }
   });
 

@@ -66,6 +66,20 @@ export interface CSVOptions {
 }
 
 /**
+ * CSV export options
+ */
+export interface CSVExportOptions {
+  /** Field delimiter (default: ',') */
+  delimiter?: string;
+
+  /** Whether to include header row (default: true) */
+  has_headers?: boolean;
+
+  /** Line ending character(s) (default: '\n', use '\r\n' for Windows) */
+  line_ending?: string;
+}
+
+/**
  * DataFrame shape (dimensions)
  */
 export interface DataFrameShape {
@@ -89,6 +103,9 @@ export enum ErrorCode {
   IndexOutOfBounds = -6,
   TooManyDataFrames = -7,
   InvalidOptions = -8,
+  InvalidRange = -10,
+  NotImplemented = -11,
+  InsufficientData = -12,
 }
 
 /**
@@ -245,6 +262,24 @@ export class DataFrame {
   sort(columnName: string, descending?: boolean): DataFrame;
 
   /**
+   * Sort DataFrame by multiple columns with per-column sort order
+   *
+   * @param sortSpecs - Array of sort specifications
+   * @returns New sorted DataFrame
+   *
+   * @example
+   * ```typescript
+   * // Sort by age descending, then by name ascending
+   * const sorted = df.sortBy([
+   *   { column: 'age', order: 'desc' },
+   *   { column: 'name', order: 'asc' }
+   * ]);
+   * sorted.free();
+   * ```
+   */
+  sortBy(sortSpecs: Array<{ column: string; order: 'asc' | 'desc' }>): DataFrame;
+
+  /**
    * Filter DataFrame by numeric condition
    *
    * @param columnName - Column to filter on
@@ -315,22 +350,27 @@ export class DataFrame {
    * Join this DataFrame with another DataFrame
    *
    * Combines rows from two DataFrames based on matching values in specified columns.
-   * Supports inner join (only matching rows) and left join (all left rows + matching right).
+   * Supports all SQL-style join types: inner, left, right, outer (full), and cross.
    *
    * **Join types:**
    * - `'inner'` (default) - Only rows where join columns match in both DataFrames
-   * - `'left'` - All rows from left DataFrame + matching rows from right
+   * - `'left'` - All rows from left DataFrame + matching rows from right (nulls for unmatched)
+   * - `'right'` - All rows from right DataFrame + matching rows from left (nulls for unmatched)
+   * - `'outer'` - All rows from both DataFrames (nulls for unmatched on either side)
+   * - `'cross'` - Cartesian product (all combinations, no join columns needed)
    *
    * **Column naming:**
    * - Columns from left DataFrame keep original names
    * - Columns from right DataFrame are suffixed with `_right` if name conflicts exist
-   * - Join columns appear only once in result
+   * - Join columns appear only once in result (except for cross join)
    *
-   * **Performance:** O(n + m) where n = left rows, m = right rows (hash join algorithm)
+   * **Performance:**
+   * - Inner/Left/Right/Outer: O(n + m) using hash join algorithm
+   * - Cross: O(n × m) - generates n × m rows (use with caution!)
    *
    * @param other - DataFrame to join with
-   * @param on - Column name(s) to join on (must exist in both DataFrames)
-   * @param how - Join type: 'inner' | 'left' (default: 'inner')
+   * @param on - Column name(s) to join on (not required for cross join)
+   * @param how - Join type: 'inner' | 'left' | 'right' | 'outer' | 'cross' (default: 'inner')
    * @returns New DataFrame with joined data
    *
    * @example
@@ -351,9 +391,26 @@ export class DataFrame {
    *
    * @example
    * ```typescript
-   * // Inner join on multiple columns
-   * const joined = sales.join(regions, ['city', 'state'], 'inner');
+   * // Right join on multiple columns
+   * const joined = orders.join(customers, ['city', 'state'], 'right');
+   * // Result: All customers, with nulls for customers without orders
    * joined.free();
+   * ```
+   *
+   * @example
+   * ```typescript
+   * // Outer join (full outer)
+   * const joined = left.join(right, 'id', 'outer');
+   * // Result: All rows from both DataFrames with nulls for unmatched
+   * joined.free();
+   * ```
+   *
+   * @example
+   * ```typescript
+   * // Cross join (Cartesian product)
+   * const crossed = colors.join(sizes, null, 'cross');
+   * // Result: Every combination of colors and sizes (3 colors × 4 sizes = 12 rows)
+   * crossed.free();
    * ```
    *
    * @example
@@ -374,8 +431,8 @@ export class DataFrame {
    */
   join(
     other: DataFrame,
-    on: string | string[],
-    how?: 'inner' | 'left'
+    on: string | string[] | null,
+    how?: 'inner' | 'left' | 'right' | 'outer' | 'cross'
   ): DataFrame;
 
   /**
@@ -513,6 +570,387 @@ export class DataFrame {
    * ```
    */
   stddev(columnName: string): number;
+
+  /**
+   * Compute median of a numeric column
+   *
+   * @param columnName - Name of the column
+   * @returns Median value, or NaN if column not found
+   * @example
+   * ```typescript
+   * const df = DataFrame.fromCSV('age\n25\n30\n35\n40\n45\n');
+   * const medianAge = df.median('age'); // 35
+   * ```
+   */
+  median(columnName: string): number;
+
+  /**
+   * Compute quantile/percentile of a numeric column
+   *
+   * @param columnName - Name of the column
+   * @param q - Quantile value between 0.0 and 1.0 (e.g., 0.25 for 25th percentile)
+   * @returns Quantile value, or NaN if column not found
+   * @example
+   * ```typescript
+   * const df = DataFrame.fromCSV('score\n10\n20\n30\n40\n50\n');
+   * const q25 = df.quantile('score', 0.25); // 20
+   * const q75 = df.quantile('score', 0.75); // 40
+   * ```
+   */
+  quantile(columnName: string, q: number): number;
+
+  /**
+   * Count frequency of unique values in a column
+   *
+   * @param columnName - Name of the column
+   * @returns Object mapping values to counts
+   * @example
+   * ```typescript
+   * const df = DataFrame.fromCSV('city\nNY\nLA\nNY\nLA\nLA\n');
+   * const counts = df.valueCounts('city'); // { LA: 3, NY: 2 }
+   * ```
+   */
+  valueCounts(columnName: string): Record<string | number, number>;
+
+  /**
+   * Compute Pearson correlation matrix for numeric columns
+   *
+   * @param columnNames - Optional array of column names (defaults to all numeric columns)
+   * @returns Nested object representing correlation matrix
+   * @example
+   * ```typescript
+   * const df = DataFrame.fromCSV('age,income,score\n25,50000,85\n30,60000,90\n35,70000,95\n');
+   * const corr = df.corrMatrix();
+   * // {
+   * //   age: { age: 1.0, income: 1.0, score: 1.0 },
+   * //   income: { age: 1.0, income: 1.0, score: 1.0 },
+   * //   score: { age: 1.0, income: 1.0, score: 1.0 }
+   * // }
+   * ```
+   */
+  corrMatrix(columnNames?: string[]): Record<string, Record<string, number>>;
+
+  /**
+   * Rank values in a column
+   *
+   * @param columnName - Name of the column
+   * @param method - Tie-handling method: 'average', 'min', 'max', 'dense', or 'ordinal'
+   * @returns New DataFrame with Float64 rank column
+   * @example
+   * ```typescript
+   * const df = DataFrame.fromCSV('score\n85\n90\n85\n95\n');
+   * const ranked = df.rank('score', 'min');
+   * console.log(ranked.column('score')); // [1, 3, 1, 4] (ties get minimum rank)
+   * ranked.free();
+   * ```
+   */
+  rank(columnName: string, method?: 'average' | 'min' | 'max' | 'dense' | 'ordinal'): DataFrame;
+
+  // ========================================================================
+  // Window Operations (Phase 4 - Milestone 1.3.0)
+  // ========================================================================
+
+  /**
+   * Apply rolling window aggregation to a column
+   *
+   * Computes aggregations over a fixed-size moving window.
+   * The window size determines how many consecutive values are included in each calculation.
+   *
+   * @param columnName - Name of the column to apply rolling window on
+   * @param windowSize - Size of the rolling window (must be positive)
+   * @param aggregation - Aggregation function: 'sum', 'mean', 'min', 'max', or 'std' (default: 'mean')
+   * @returns New DataFrame with rolling aggregation result
+   *
+   * @example
+   * ```typescript
+   * const df = DataFrame.fromCSV('value\n10\n20\n30\n40\n50\n');
+   * const rollingMean = df.rolling('value', 3, 'mean');
+   * console.log(rollingMean.column('value')); // [10, 15, 20, 30, 40]
+   * rollingMean.free();
+   * ```
+   */
+  rolling(columnName: string, windowSize: number, aggregation?: 'sum' | 'mean' | 'min' | 'max' | 'std'): DataFrame;
+
+  /**
+   * Apply expanding (cumulative) window aggregation to a column
+   *
+   * Computes aggregations over all values from the start up to the current position.
+   * Useful for cumulative sums, running averages, etc.
+   *
+   * @param columnName - Name of the column to apply expanding window on
+   * @param aggregation - Aggregation function: 'sum' or 'mean' (default: 'sum')
+   * @returns New DataFrame with expanding aggregation result
+   *
+   * @example
+   * ```typescript
+   * const df = DataFrame.fromCSV('value\n10\n20\n30\n40\n50\n');
+   * const cumsum = df.expanding('value', 'sum');
+   * console.log(cumsum.column('value')); // [10, 30, 60, 100, 150]
+   * cumsum.free();
+   * ```
+   */
+  expanding(columnName: string, aggregation?: 'sum' | 'mean'): DataFrame;
+
+  /**
+   * Shift column values by a given number of periods
+   *
+   * Moves values forward (positive periods) or backward (negative periods).
+   * Shifted positions are filled with NaN.
+   *
+   * @param columnName - Name of the column to shift
+   * @param periods - Number of periods to shift (positive = forward, negative = backward, default: 1)
+   * @returns New DataFrame with shifted values
+   *
+   * @example
+   * ```typescript
+   * const df = DataFrame.fromCSV('value\n10\n20\n30\n40\n50\n');
+   * const shifted = df.shift('value', 1); // Shift forward by 1
+   * console.log(shifted.column('value')); // [NaN, 10, 20, 30, 40]
+   * shifted.free();
+   * ```
+   */
+  shift(columnName: string, periods?: number): DataFrame;
+
+  /**
+   * Compute first discrete difference (current - previous)
+   *
+   * Calculates the difference between each value and the value N periods before it.
+   * First N periods are filled with NaN.
+   *
+   * @param columnName - Name of the column to compute difference on
+   * @param periods - Number of periods for difference (default: 1)
+   * @returns New DataFrame with difference values
+   *
+   * @example
+   * ```typescript
+   * const df = DataFrame.fromCSV('value\n10\n15\n12\n20\n25\n');
+   * const diff = df.diff('value', 1);
+   * console.log(diff.column('value')); // [NaN, 5, -3, 8, 5]
+   * diff.free();
+   * ```
+   */
+  diff(columnName: string, periods?: number): DataFrame;
+
+  /**
+   * Compute percentage change (percent difference from previous value)
+   *
+   * Calculates (current - previous) / previous for each value.
+   * First N periods are NaN. If previous value is zero, result is NaN.
+   *
+   * @param columnName - Name of the column to compute percent change on
+   * @param periods - Number of periods for percent change (default: 1)
+   * @returns New DataFrame with percent change values
+   *
+   * @example
+   * ```typescript
+   * const df = DataFrame.fromCSV('value\n100\n110\n105\n120\n');
+   * const pctChange = df.pctChange('value', 1);
+   * console.log(pctChange.column('value')); // [NaN, 0.1, -0.045454..., 0.142857...]
+   * pctChange.free();
+   * ```
+   */
+  pctChange(columnName: string, periods?: number): DataFrame;
+
+  /**
+   * Pivot DataFrame from long format to wide format
+   *
+   * Transforms a long-format DataFrame into wide format by creating new columns
+   * from unique values in the specified `columns` column.
+   *
+   * **Example transformation:**
+   * ```
+   * Input (long):             Output (wide):
+   * date       region sales   date       East West South
+   * 2024-01-01 East   100     2024-01-01 100  200  150
+   * 2024-01-01 West   200     2024-01-02 120  180  160
+   * 2024-01-01 South  150
+   * 2024-01-02 East   120
+   * ```
+   *
+   * @param options - Pivot configuration
+   * @param options.index - Column name to use as row labels
+   * @param options.columns - Column name to pivot (unique values become new columns)
+   * @param options.values - Column name containing values to aggregate
+   * @param options.aggfunc - Aggregation function: 'sum', 'mean', 'count', 'min', 'max' (default: 'sum')
+   * @returns New DataFrame with pivoted structure
+   *
+   * @example
+   * ```typescript
+   * const df = DataFrame.fromCSV('date,region,sales\n2024-01-01,East,100\n2024-01-01,West,200');
+   * const pivoted = df.pivot({
+   *   index: 'date',
+   *   columns: 'region',
+   *   values: 'sales',
+   *   aggfunc: 'sum'
+   * });
+   * // Result: date, East, West
+   * //         2024-01-01, 100, 200
+   * pivoted.free();
+   * ```
+   */
+  pivot(options: {
+    index: string;
+    columns: string;
+    values: string;
+    aggfunc?: 'sum' | 'mean' | 'count' | 'min' | 'max';
+  }): DataFrame;
+
+  /**
+   * Melt DataFrame from wide format to long format (unpivot)
+   *
+   * Transforms a wide-format DataFrame into long format by unpivoting columns
+   * into rows.
+   *
+   * **Example transformation:**
+   * ```
+   * Input (wide):        Output (long):
+   * date       East West date       region sales
+   * 2024-01-01 100  200  2024-01-01 East   100
+   * 2024-01-02 120  180  2024-01-01 West   200
+   *                      2024-01-02 East   120
+   *                      2024-01-02 West   180
+   * ```
+   *
+   * @param options - Melt configuration
+   * @param options.id_vars - Array of column names to preserve as identifiers
+   * @param options.value_vars - Array of column names to melt (optional; if null, melts all non-id columns)
+   * @param options.var_name - Name for the new variable column (default: 'variable')
+   * @param options.value_name - Name for the new value column (default: 'value')
+   * @returns New DataFrame with melted structure
+   *
+   * @example
+   * ```typescript
+   * const df = DataFrame.fromCSV('date,East,West\n2024-01-01,100,200');
+   * const melted = df.melt({
+   *   id_vars: ['date'],
+   *   var_name: 'region',
+   *   value_name: 'sales'
+   * });
+   * // Result: date, region, sales
+   * //         2024-01-01, East, 100
+   * //         2024-01-01, West, 200
+   * melted.free();
+   * ```
+   */
+  melt(options: {
+    id_vars: string[];
+    value_vars?: string[];
+    var_name?: string;
+    value_name?: string;
+  }): DataFrame;
+
+  /**
+   * Transpose DataFrame - swap rows and columns
+   *
+   * Converts rows to columns and columns to rows. All values are converted
+   * to Float64 for consistency.
+   *
+   * **Example transformation:**
+   * ```
+   * Input:         Output:
+   * A   B   C      row_0 row_1
+   * 1   2   3      1     4
+   * 4   5   6      2     5
+   *                3     6
+   * ```
+   *
+   * @returns New DataFrame with transposed structure
+   *
+   * @example
+   * ```typescript
+   * const df = DataFrame.fromCSV('A,B,C\n1,2,3\n4,5,6');
+   * const transposed = df.transpose();
+   * // Result: row_0, row_1
+   * //         1, 4
+   * //         2, 5
+   * //         3, 6
+   * transposed.free();
+   * ```
+   */
+  transpose(): DataFrame;
+
+  /**
+   * Stack DataFrame - convert wide format to long format
+   *
+   * Simpler API than melt() for converting wide to long format. Stacks all
+   * columns except the id_column into variable and value columns.
+   *
+   * **Example transformation:**
+   * ```
+   * Input:        Output:
+   * id A  B  C    id variable value
+   * 1  10 20 30   1  A        10
+   * 2  40 50 60   1  B        20
+   *               1  C        30
+   *               2  A        40
+   *               2  B        50
+   *               2  C        60
+   * ```
+   *
+   * @param options - Stack configuration
+   * @param options.id_column - Column name to use as identifier (preserved in output)
+   * @param options.var_name - Name for the new variable column (default: 'variable')
+   * @param options.value_name - Name for the new value column (default: 'value')
+   * @returns New DataFrame with stacked structure
+   *
+   * @example
+   * ```typescript
+   * const df = DataFrame.fromCSV('id,A,B,C\n1,10,20,30\n2,40,50,60');
+   * const stacked = df.stack({ id_column: 'id' });
+   * // Result: id, variable, value
+   * //         1, A, 10
+   * //         1, B, 20
+   * //         1, C, 30
+   * stacked.free();
+   * ```
+   */
+  stack(options: {
+    id_column: string;
+    var_name?: string;
+    value_name?: string;
+  }): DataFrame;
+
+  /**
+   * Unstack DataFrame - convert long format to wide format
+   *
+   * Inverse of stack(). Pivots a long-format DataFrame to wide format
+   * based on the columns parameter.
+   *
+   * **Example transformation:**
+   * ```
+   * Input:                Output:
+   * id variable value     id A  B
+   * 1  A        10        1  10 20
+   * 1  B        20        2  40 50
+   * 2  A        40
+   * 2  B        50
+   * ```
+   *
+   * @param options - Unstack configuration
+   * @param options.index - Column name for index values
+   * @param options.columns - Column name with variable names (becomes new columns)
+   * @param options.values - Column name with values to populate
+   * @returns New DataFrame with unstacked structure
+   *
+   * @example
+   * ```typescript
+   * const df = DataFrame.fromCSV('id,variable,value\n1,A,10\n1,B,20\n2,A,40\n2,B,50');
+   * const unstacked = df.unstack({
+   *   index: 'id',
+   *   columns: 'variable',
+   *   values: 'value'
+   * });
+   * // Result: id, A, B
+   * //         1, 10, 20
+   * //         2, 40, 50
+   * unstacked.free();
+   * ```
+   */
+  unstack(options: {
+    index: string;
+    columns: string;
+    values: string;
+  }): DataFrame;
 
   /**
    * Free DataFrame memory
@@ -747,7 +1185,27 @@ export class DataFrame {
    * const dataOnly = df.toCSV({ has_headers: false });
    * ```
    */
-  toCSV(options?: CSVOptions): string;
+  toCSV(options?: CSVExportOptions): string;
+
+  /**
+   * Export DataFrame to CSV file (Node.js only)
+   *
+   * @param filePath - Path to output CSV file
+   * @param options - CSV formatting options
+   * @throws {Error} If not running in Node.js environment
+   *
+   * @example
+   * ```typescript
+   * df.toCSVFile('output.csv');
+   * ```
+   *
+   * @example
+   * ```typescript
+   * // Custom options
+   * df.toCSVFile('output.tsv', { delimiter: '\t', line_ending: '\r\n' });
+   * ```
+   */
+  toCSVFile(filePath: string, options?: CSVExportOptions): void;
 
   /**
    * Access string operations on DataFrame columns

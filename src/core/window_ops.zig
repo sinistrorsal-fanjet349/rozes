@@ -62,7 +62,7 @@ pub const RollingWindow = struct {
         const len = self.series.length;
         const result_data = try allocator.alloc(f64, len);
 
-        switch (self.series.valueType) {
+        switch (self.series.value_type) {
             .Int64 => {
                 const data = self.series.data.Int64;
                 var i: u32 = 0;
@@ -97,7 +97,7 @@ pub const RollingWindow = struct {
 
         return Series{
             .name = self.series.name,
-            .valueType = .Float64,
+            .value_type = .Float64,
             .data = .{ .Float64 = result_data },
             .length = len,
         };
@@ -133,7 +133,7 @@ pub const RollingWindow = struct {
 
         return Series{
             .name = self.series.name,
-            .valueType = .Float64,
+            .value_type = .Float64,
             .data = .{ .Float64 = result_data },
             .length = len,
         };
@@ -148,7 +148,7 @@ pub const RollingWindow = struct {
         const len = self.series.length;
         const result_data = try allocator.alloc(f64, len);
 
-        switch (self.series.valueType) {
+        switch (self.series.value_type) {
             .Int64 => {
                 const data = self.series.data.Int64;
                 var i: u32 = 0;
@@ -184,7 +184,7 @@ pub const RollingWindow = struct {
 
         return Series{
             .name = self.series.name,
-            .valueType = .Float64,
+            .value_type = .Float64,
             .data = .{ .Float64 = result_data },
             .length = len,
         };
@@ -199,7 +199,7 @@ pub const RollingWindow = struct {
         const len = self.series.length;
         const result_data = try allocator.alloc(f64, len);
 
-        switch (self.series.valueType) {
+        switch (self.series.value_type) {
             .Int64 => {
                 const data = self.series.data.Int64;
                 var i: u32 = 0;
@@ -235,7 +235,7 @@ pub const RollingWindow = struct {
 
         return Series{
             .name = self.series.name,
-            .valueType = .Float64,
+            .value_type = .Float64,
             .data = .{ .Float64 = result_data },
             .length = len,
         };
@@ -250,7 +250,7 @@ pub const RollingWindow = struct {
         const len = self.series.length;
         const result_data = try allocator.alloc(f64, len);
 
-        switch (self.series.valueType) {
+        switch (self.series.value_type) {
             .Int64 => {
                 const data = self.series.data.Int64;
                 var i: u32 = 0;
@@ -314,7 +314,7 @@ pub const RollingWindow = struct {
 
         return Series{
             .name = self.series.name,
-            .valueType = .Float64,
+            .value_type = .Float64,
             .data = .{ .Float64 = result_data },
             .length = len,
         };
@@ -343,7 +343,7 @@ pub const ExpandingWindow = struct {
         const len = self.series.length;
         const result_data = try allocator.alloc(f64, len);
 
-        switch (self.series.valueType) {
+        switch (self.series.value_type) {
             .Int64 => {
                 const data = self.series.data.Int64;
                 var cumsum: f64 = 0.0;
@@ -370,7 +370,7 @@ pub const ExpandingWindow = struct {
 
         return Series{
             .name = self.series.name,
-            .valueType = .Float64,
+            .value_type = .Float64,
             .data = .{ .Float64 = result_data },
             .length = len,
         };
@@ -395,7 +395,7 @@ pub const ExpandingWindow = struct {
 
         return Series{
             .name = self.series.name,
-            .valueType = .Float64,
+            .value_type = .Float64,
             .data = .{ .Float64 = result_data },
             .length = len,
         };
@@ -417,7 +417,7 @@ pub fn shift(series: *const Series, allocator: Allocator, periods: i32) !Series 
         @memset(result_data, std.math.nan(f64));
         return Series{
             .name = series.name,
-            .valueType = .Float64,
+            .value_type = .Float64,
             .data = .{ .Float64 = result_data },
             .length = len,
         };
@@ -428,7 +428,7 @@ pub fn shift(series: *const Series, allocator: Allocator, periods: i32) !Series 
     if (periods > 0) {
         // Shift forward: fill first `periods` with NaN
         @memset(result_data[0..@intCast(periods)], std.math.nan(f64));
-        switch (series.valueType) {
+        switch (series.value_type) {
             .Int64 => {
                 const data = series.data.Int64;
                 var i: u32 = @intCast(periods);
@@ -449,7 +449,7 @@ pub fn shift(series: *const Series, allocator: Allocator, periods: i32) !Series 
         // Shift backward: fill last `periods` with NaN
         const start_idx = len - @as(u32, @intCast(abs_periods));
         @memset(result_data[start_idx..], std.math.nan(f64));
-        switch (series.valueType) {
+        switch (series.value_type) {
             .Int64 => {
                 const data = series.data.Int64;
                 var i: u32 = 0;
@@ -470,7 +470,7 @@ pub fn shift(series: *const Series, allocator: Allocator, periods: i32) !Series 
 
     return Series{
         .name = series.name,
-        .valueType = .Float64,
+        .value_type = .Float64,
         .data = .{ .Float64 = result_data },
         .length = len,
     };
@@ -489,7 +489,7 @@ pub fn diff(series: *const Series, allocator: Allocator, periods: u32) !Series {
     // Fill first `periods` with NaN
     @memset(result_data[0..periods], std.math.nan(f64));
 
-    switch (series.valueType) {
+    switch (series.value_type) {
         .Int64 => {
             const data = series.data.Int64;
             var i: u32 = periods;
@@ -514,7 +514,7 @@ pub fn diff(series: *const Series, allocator: Allocator, periods: u32) !Series {
 
     return Series{
         .name = series.name,
-        .valueType = .Float64,
+        .value_type = .Float64,
         .data = .{ .Float64 = result_data },
         .length = len,
     };
@@ -533,7 +533,7 @@ pub fn pctChange(series: *const Series, allocator: Allocator, periods: u32) !Ser
     // Fill first `periods` with NaN
     @memset(result_data[0..periods], std.math.nan(f64));
 
-    switch (series.valueType) {
+    switch (series.value_type) {
         .Int64 => {
             const data = series.data.Int64;
             var i: u32 = periods;
@@ -567,7 +567,7 @@ pub fn pctChange(series: *const Series, allocator: Allocator, periods: u32) !Ser
 
     return Series{
         .name = series.name,
-        .valueType = .Float64,
+        .value_type = .Float64,
         .data = .{ .Float64 = result_data },
         .length = len,
     };

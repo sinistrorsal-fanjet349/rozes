@@ -532,6 +532,7 @@ fn fillIndexColumn(df: *DataFrame, result: *PivotResult, index_type: ValueType) 
     std.debug.assert(df.columns.len > 0); // Pre-condition #2
 
     const index_series = &df.columns[0];
+    const arena_alloc = df.arena.allocator();
 
     var row_idx: u32 = 0;
     while (row_idx < df.row_count and row_idx < result.index_keys.items.len) : (row_idx += 1) {
@@ -541,10 +542,15 @@ fn fillIndexColumn(df: *DataFrame, result: *PivotResult, index_type: ValueType) 
             .Int64 => index_series.data.Int64[row_idx] = key.Int64,
             .Float64 => index_series.data.Float64[row_idx] = key.Float64,
             .Bool => index_series.data.Bool[row_idx] = key.Bool,
-            .String, .Categorical => {
-                // String handling would go here (deferred for now)
-                std.log.err("String index type not yet implemented: column '{s}' at row {}", .{ index_series.name, row_idx });
-                return error.StringIndexNotYetImplemented;
+            .String => {
+                // Append string value to StringColumn
+                const str_value = key.String;
+                try index_series.appendString(arena_alloc, str_value);
+            },
+            .Categorical => {
+                // Append categorical value to StringColumn
+                const cat_value = key.Categorical;
+                try index_series.appendString(arena_alloc, cat_value);
             },
             else => {
                 std.log.err("Unsupported index type: {any} for column '{s}'", .{ index_type, index_series.name });
@@ -777,14 +783,13 @@ fn buildMeltedDataFrame(
     std.debug.assert(col_idx_set == result.columns.len or col_idx_set == MAX_RESULT_COLUMNS); // Post-condition
 
     // Fill data
-    try fillMeltedData(allocator, &result, df, opts, melt_columns);
+    try fillMeltedData(&result, df, opts, melt_columns);
 
     return result;
 }
 
 /// Fill the melted DataFrame with data
 fn fillMeltedData(
-    allocator: std.mem.Allocator,
     result: *DataFrame,
     source: *const DataFrame,
     opts: MeltOptions,
@@ -795,6 +800,7 @@ fn fillMeltedData(
 
     var result_row: u32 = 0;
     const max_result_rows = result.row_count;
+    const df_allocator = result.getAllocator();
 
     // For each source row
     var source_row: u32 = 0;
@@ -817,7 +823,7 @@ fn fillMeltedData(
             // Set variable name (column being melted)
             const var_col_idx = opts.id_vars.len;
             const var_name = melt_columns[melt_idx];
-            try result.columns[var_col_idx].appendString(allocator, var_name);
+            try result.columns[var_col_idx].appendString(df_allocator, var_name);
 
             // Set value (convert to Float64)
             const value_col_idx = opts.id_vars.len + 1;

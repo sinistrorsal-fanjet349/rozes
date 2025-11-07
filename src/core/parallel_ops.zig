@@ -52,15 +52,22 @@ pub const ThreadPool = struct {
             return 1;
         }
 
-        // Get CPU count (capped at MAX_THREADS)
-        const cpu_count = @min(std.Thread.getCpuCount() catch 4, MAX_THREADS);
+        // Get CPU count (capped at MAX_THREADS and never zero)
+        const raw_cpu_count = std.Thread.getCpuCount() catch 4;
+        const clamped_cpu_count = std.math.clamp(
+            raw_cpu_count,
+            @as(usize, 1),
+            @as(usize, MAX_THREADS),
+        );
+        const cpu_count: u32 = @intCast(clamped_cpu_count);
 
         // Use fewer threads for medium datasets
         if (row_count < 1_000_000) {
-            return @min(cpu_count / 2, 4);
+            const medium_threads = @min(cpu_count / 2, @as(u32, 4));
+            return @max(medium_threads, @as(u32, 1));
         }
 
-        return @intCast(cpu_count);
+        return cpu_count;
     }
 
     /// Partition rows into chunks for parallel processing

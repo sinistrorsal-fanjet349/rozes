@@ -851,6 +851,13 @@ pub const StringColumn = struct {
         allocator: std.mem.Allocator,
         str: []const u8,
     ) !void {
+        if (self.count >= self.capacity) {
+            logError(
+                "StringColumn at capacity {} when appending string of length {}",
+                .{ self.capacity, str.len },
+            );
+            return error.OutOfCapacity;
+        }
         std.debug.assert(self.count < self.capacity); // Space available
         std.debug.assert(str.len <= MAX_BUFFER_SIZE); // String not too large
 
@@ -1252,6 +1259,17 @@ test "StringColumn.append and get basic strings" {
     try testing.expectEqualStrings("Alice", col.get(0));
     try testing.expectEqualStrings("Bob", col.get(1));
     try testing.expectEqualStrings("Charlie", col.get(2));
+}
+
+test "StringColumn.append returns OutOfCapacity when full" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    var col = try StringColumn.init(allocator, 1, 32);
+    defer col.deinit(allocator);
+
+    try col.append(allocator, "full");
+    try testing.expectError(error.OutOfCapacity, col.append(allocator, "overflow"));
 }
 
 test "StringColumn.append with buffer growth" {
