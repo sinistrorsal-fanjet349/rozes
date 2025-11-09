@@ -7,7 +7,7 @@
  * Run with: node --expose-gc wasm_memory_test.js
  */
 
-const { Rozes } = require('../../../../dist/index.js');
+import { Rozes } from '../../../../dist/index.mjs';
 
 // Colors for output
 const GREEN = '\x1b[32m';
